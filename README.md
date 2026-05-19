@@ -10,6 +10,7 @@ and structured OData filter assembly for auto-assignment policies.
 - **Display name resolution** - pass Entra group and Teams team display names directly; the module resolves them to object IDs via data source
 - **Per-package `access_type`** - set a role once at the package level and it fans out to all resources in that package. `"Member"` or `"Owner"` for `AadGroup` resources, a role UUID for `AadApplication` resources, or any valid role value for other resource types
 - **SharePoint resources** - pass site path suffixes (`"BrandDesigns"`) with a `sharepoint_base_url` instead of constructing full origin IDs manually
+- **Idempotent SharePoint catalog onboarding** - catalog-level associations are handled via `null_resource` + `local-exec` that checks via Graph API before POSTing; avoids `ResourceAlreadyOnboarded` errors on subsequent applies
 - **Structured OData filters** - use `dept_code`, `dept_name`, `exclude_title_prefixes`, and `include_title_prefixes` to build auto-assignment filters without writing raw OData
 - **Raw filter escape hatch** - set `filter` directly for any custom OData expression; structured fields are ignored when this is set
 - **Raw resource escape hatch** - pass `resources` directly with object IDs when display name resolution is not needed
@@ -138,6 +139,18 @@ Setting the raw `filter` field overrides all structured fields.
 | terraform | >= 1.4.6 |
 | azuread | >= 2.39.0 |
 | msgraph | >= 0.3.0 |
+| null | >= 3.0.0 |
+
+### SharePoint catalog onboarding
+
+SharePoint site catalog associations are created via a `null_resource` `local-exec` provisioner.
+The machine running `terraform apply` must have:
+
+- `bash`, `curl`, `jq` available on `$PATH`
+- `ARM_CLIENT_ID`, `ARM_CLIENT_SECRET`, `ARM_TENANT_ID` set in the environment
+
+These are the same credentials used by the `azuread` provider and are set automatically when
+using the standard Azure pipeline authentication pattern (`ARM_*` environment variables).
 
 ## Inputs
 
@@ -195,19 +208,22 @@ Additional gaps covered:
 | Group / Teams resources by **display name** | No - requires raw object IDs | Yes - resolves display names to object IDs internally |
 | **Per-package `access_type`** | No - role must be set per resource object | Yes - set once at the package level, fans out to all resources |
 | **SharePoint** by path suffix | No - requires full origin ID | Yes - `sharepoint_resources` + `sharepoint_base_url` |
+| **Idempotent SharePoint catalog onboarding** | No - `ResourceAlreadyOnboarded` on subsequent applies | Yes - `null_resource` local-exec checks via Graph before POSTing |
 | **Structured OData filters** | No - raw filter string only | Yes - `dept_code`, `dept_name`, `include/exclude_title_prefixes`; raw `filter` still works as an escape hatch |
 
 ## Known Limitations and Roadmap
 
 ### Catalog resource association removal
 
-Removing a resource from a catalog (or removing a SharePoint site association) is not currently supported. Catalog associations are created via
-`msgraph_resource_action` which issues a one-time POST to the Graph API and has no DELETE lifecycle. Terraform cannot destroy these associations -
-removing a resource from your config will leave the association in Entra until it is deleted manually via the portal or Graph API.
+Removing a SharePoint resource from a catalog is not currently supported. The `null_resource`
+`local-exec` provisioner only runs on create — Terraform has no mechanism to issue a Graph API
+DELETE for catalog associations on destroy. Removing a SharePoint resource from your config will
+leave the catalog association in Entra until it is deleted manually via the portal or Graph API.
 
 Tracking: [hashicorp/terraform-provider-azuread#1637](https://github.com/hashicorp/terraform-provider-azuread/issues/1637)
 
-Once the `azuread` provider adds native support for catalog resource associations (removing the need for the `msgraph_resource_action` workaround), this module will be updated to use it - enabling full create and destroy lifecycle management for all resource types.
+Once the `azuread` provider adds native support for catalog resource associations this module will
+be updated to use it, enabling full create and destroy lifecycle management.
 
 ### Planned improvements
 

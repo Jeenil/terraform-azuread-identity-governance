@@ -287,10 +287,58 @@ data "msgraph_resource" "resource_access_package_catalog_resource_roles" {
 }
 
 ###   Identity Governance - Resource Catalog Associations for SharePointOnline
-###   Catalog-level onboarding is handled by Invoke-ElmCatalogOnboarding.ps1 (pipeline pre-flight).
-###   msgraph_resource_action has no read lifecycle so Terraform cannot detect existing associations,
-###   causing ResourceAlreadyOnboarded (400) on subsequent applies.
+###   Uses null_resource + local-exec to idempotently onboard SP resources to the catalog.
+###   Checks via Graph API before POSTing — skips if already onboarded.
+###   ARM_CLIENT_ID, ARM_CLIENT_SECRET, ARM_TENANT_ID must be set in the environment
+###   (the azuread provider sets these automatically from its own authentication config).
 ###################################################################
+resource "null_resource" "sharepoint-catalog-associations" {
+  for_each = { for resource in local.sharepoint-catalog-associations-filtered : resource.catalog_resource_association_key => resource }
+
+  triggers = {
+    catalog_id = azuread_access_package_catalog.entitlement-catalogs[each.value.catalog_key].id
+    origin_id  = each.value.resource_origin_id
+  }
+
+  provisioner "local-exec" {
+    interpreter = ["/bin/bash", "-c"]
+    command     = <<-EOT
+      set -euo pipefail
+
+      token=$(curl -sf -X POST \
+        "https://login.microsoftonline.com/$ARM_TENANT_ID/oauth2/v2.0/token" \
+        --data-urlencode "grant_type=client_credentials" \
+        --data-urlencode "client_id=$ARM_CLIENT_ID" \
+        --data-urlencode "client_secret=$ARM_CLIENT_SECRET" \
+        --data-urlencode "scope=https://graph.microsoft.com/.default" \
+        | jq -r '.access_token')
+
+      count=$(curl -sf \
+        -H "Authorization: Bearer $token" \
+        -G "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/catalogs/${self.triggers.catalog_id}/resources" \
+        --data-urlencode "\$filter=originId eq '${self.triggers.origin_id}'" \
+        | jq '.value | length')
+
+      if [ "$count" -eq 0 ]; then
+        body=$(jq -n \
+          --arg oid "${self.triggers.origin_id}" \
+          --arg cid "${self.triggers.catalog_id}" \
+          '{"requestType":"AdminAdd","justification":"","resource":{"originId":$oid,"originSystem":"SharePointOnline"},"catalog":{"id":$cid}}')
+        curl -sf -X POST \
+          -H "Authorization: Bearer $token" \
+          -H "Content-Type: application/json" \
+          "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/resourceRequests" \
+          -d "$body" > /dev/null
+        echo "[+] Onboarded: ${self.triggers.origin_id}"
+      else
+        echo "[=] Already in catalog: ${self.triggers.origin_id}"
+      fi
+    EOT
+  }
+
+  depends_on = [azuread_access_package_catalog.entitlement-catalogs]
+}
+
 data "msgraph_resource" "sharepoint_catalog_resources" {
   for_each = { for resource in local.resources : resource.access_package_resource_association_key => resource if resource.resource_origin_system == "SharePointOnline" }
   url      = "/identityGovernance/entitlementManagement/catalogs/${azuread_access_package_catalog.entitlement-catalogs[each.value.catalog_key].id}/resources"
@@ -305,7 +353,8 @@ data "msgraph_resource" "sharepoint_catalog_resources" {
   }
 
   depends_on = [
-    azuread_access_package_catalog.entitlement-catalogs
+    azuread_access_package_catalog.entitlement-catalogs,
+    null_resource.sharepoint-catalog-associations
   ]
 }
 
@@ -325,6 +374,7 @@ data "msgraph_resource" "sharepoint_catalog_resource_roles" {
 
   depends_on = [
     azuread_access_package_catalog.entitlement-catalogs,
+    null_resource.sharepoint-catalog-associations,
     data.msgraph_resource.sharepoint_catalog_resources
   ]
 }
@@ -358,6 +408,7 @@ resource "msgraph_resource_action" "sharepoint-access-package-associations" {
   depends_on = [
     azuread_access_package_catalog.entitlement-catalogs,
     azuread_access_package.access-packages,
+    null_resource.sharepoint-catalog-associations,
     data.msgraph_resource.sharepoint_catalog_resources,
     data.msgraph_resource.sharepoint_catalog_resource_roles
   ]

@@ -122,4 +122,8 @@ locals {
     if resource.resource_origin_system != "SharePointOnline"
   ]
 
+  sharepoint-catalog-associations-filtered = [
+    for resource in values(zipmap(local.resources[*].catalog_resource_association_key, local.resources)) : resource
+    if resource.resource_origin_system == "SharePointOnline"
+  ]
 }
