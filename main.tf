@@ -287,30 +287,10 @@ data "msgraph_resource" "resource_access_package_catalog_resource_roles" {
 }
 
 ###   Identity Governance - Resource Catalog Associations for SharePointOnline
-###   due to https://github.com/hashicorp/terraform-provider-azuread/issues/1637
+###   Catalog-level onboarding is handled by Invoke-ElmCatalogOnboarding.ps1 (pipeline pre-flight).
+###   msgraph_resource_action has no read lifecycle so Terraform cannot detect existing associations,
+###   causing ResourceAlreadyOnboarded (400) on subsequent applies.
 ###################################################################
-resource "msgraph_resource_action" "sharepoint-catalog-associations" {
-  for_each     = { for resource in local.sharepoint-catalog-associations-filtered : resource.catalog_resource_association_key => resource }
-  resource_url = "/identityGovernance/entitlementManagement/resourceRequests"
-  method       = "POST"
-
-  body = {
-    requestType   = "AdminAdd"
-    justification = ""
-    resource = {
-      originId     = each.value.resource_origin_id
-      originSystem = "SharePointOnline"
-    }
-    catalog = {
-      id = azuread_access_package_catalog.entitlement-catalogs[each.value.catalog_key].id
-    }
-  }
-
-  depends_on = [
-    azuread_access_package_catalog.entitlement-catalogs
-  ]
-}
-
 data "msgraph_resource" "sharepoint_catalog_resources" {
   for_each = { for resource in local.resources : resource.access_package_resource_association_key => resource if resource.resource_origin_system == "SharePointOnline" }
   url      = "/identityGovernance/entitlementManagement/catalogs/${azuread_access_package_catalog.entitlement-catalogs[each.value.catalog_key].id}/resources"
@@ -325,8 +305,7 @@ data "msgraph_resource" "sharepoint_catalog_resources" {
   }
 
   depends_on = [
-    azuread_access_package_catalog.entitlement-catalogs,
-    msgraph_resource_action.sharepoint-catalog-associations
+    azuread_access_package_catalog.entitlement-catalogs
   ]
 }
 
@@ -346,7 +325,6 @@ data "msgraph_resource" "sharepoint_catalog_resource_roles" {
 
   depends_on = [
     azuread_access_package_catalog.entitlement-catalogs,
-    msgraph_resource_action.sharepoint-catalog-associations,
     data.msgraph_resource.sharepoint_catalog_resources
   ]
 }
@@ -380,7 +358,6 @@ resource "msgraph_resource_action" "sharepoint-access-package-associations" {
   depends_on = [
     azuread_access_package_catalog.entitlement-catalogs,
     azuread_access_package.access-packages,
-    msgraph_resource_action.sharepoint-catalog-associations,
     data.msgraph_resource.sharepoint_catalog_resources,
     data.msgraph_resource.sharepoint_catalog_resource_roles
   ]
