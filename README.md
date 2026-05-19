@@ -8,7 +8,7 @@ and structured OData filter assembly for auto-assignment policies.
 ## Features
 
 - **Display name resolution** - pass Entra group and Teams team display names directly; the module resolves them to object IDs via data source
-- **Per-package `access_type`** - set a role once at the package level and it fans out to all resources in that package. `"Member"` or `"Owner"` for `AadGroup` resources, a role UUID for `AadApplication` resources, or any valid role value for other resource types
+- **Per-package `access_type`** - set a role once at the package level and it fans out to all resources in that package. `"Member"` or `"Owner"` for `AadGroup` and `SharePointOnline` resources (resolved to the site Members/Owners permission group automatically), a role UUID for `AadApplication` resources
 - **SharePoint resources** - pass site path suffixes (`"BrandDesigns"`) with a `sharepoint_base_url` instead of constructing full origin IDs manually
 - **Idempotent SharePoint catalog onboarding** - catalog-level associations are handled via `null_resource` + `local-exec` that checks via Graph API before POSTing; avoids `ResourceAlreadyOnboarded` errors on subsequent applies
 - **Structured OData filters** - use `dept_code`, `dept_name`, `exclude_title_prefixes`, and `include_title_prefixes` to build auto-assignment filters without writing raw OData
@@ -169,7 +169,7 @@ using the standard Azure pipeline authentication pattern (`ARM_*` environment va
 | `teams_resources` | Teams team display names - resolved to M365 group object IDs | `[]` |
 | `sharepoint_resources` | SharePoint site path suffixes e.g. `"BrandDesigns"` | `[]` |
 | `sharepoint_base_url` | Base SharePoint URL - required when `sharepoint_resources` is non-empty | `""` |
-| `access_type` | Role granted on all resources in this package. `"Member"` or `"Owner"` for `AadGroup`, role UUID for `AadApplication` | `"Member"` |
+| `access_type` | Role granted on all resources in this package. `"Member"` or `"Owner"` for `AadGroup` and `SharePointOnline` (resolved to the site Members/Owners permission group); role UUID for `AadApplication` | `"Member"` |
 | `resources` | Raw resource objects - escape hatch, overrides display-name inputs if non-empty | `[]` |
 | `auto_assignment_policy` | Auto-assignment policy configuration | `null` |
 
@@ -206,7 +206,7 @@ Additional gaps covered:
 | --- | --- | --- |
 | **Member + Owner packages sharing resources** in one catalog | No | Yes - deduplicates catalog associations |
 | Group / Teams resources by **display name** | No - requires raw object IDs | Yes - resolves display names to object IDs internally |
-| **Per-package `access_type`** | No - role must be set per resource object | Yes - set once at the package level, fans out to all resources |
+| **Per-package `access_type`** | No - role must be set per resource object | Yes - set once at the package level, fans out to all resources; `"Owner"` grants SP site Owners permission group for SharePoint resources |
 | **SharePoint** by path suffix | No - requires full origin ID | Yes - `sharepoint_resources` + `sharepoint_base_url` |
 | **Idempotent SharePoint catalog onboarding** | No - `ResourceAlreadyOnboarded` on subsequent applies | Yes - `null_resource` local-exec checks via Graph before POSTing |
 | **Structured OData filters** | No - raw filter string only | Yes - `dept_code`, `dept_name`, `include/exclude_title_prefixes`; raw `filter` still works as an escape hatch |
