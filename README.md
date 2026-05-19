@@ -45,7 +45,7 @@ module "entitlement_catalog" {
 ### Member and owner split with auto-assignment
 
 Two packages with the same resource list, each granting a different role. Both packages repeat the
-resource list — each package owns its own resource associations in Entra. The module makes this
+resource list - each package owns its own resource associations in Entra. The module makes this
 concise: you repeat display names instead of full resource objects with raw object IDs, and `access_type`
 is set once at the package level rather than on every resource object. Per-resource role overrides are
 still available via the `resources` escape hatch when needed. The structured filter fields build the
@@ -184,35 +184,35 @@ Setting the raw `filter` field overrides all structured fields.
 
 ## Why not use fortytwoservices/terraform-azuread-entitlement-management?
 
-The upstream module is a solid foundation and this module builds directly on it. The primary reason for this module is **catalog resource association deduplication** — if you put two packages in the same catalog that share the same resources (the typical Member + Owner split), the upstream module tries to create duplicate catalog resource associations for the same resource, which fails.
+The upstream module is a solid foundation and this module builds directly on it. The primary reason for this module is **catalog resource association deduplication** - if you put two packages in the same catalog that share the same resources (the typical Member + Owner split), the upstream module tries to create duplicate catalog resource associations for the same resource, which fails.
 This module deduplicates catalog associations so a resource is registered with the catalog once and each package gets its own package-level association at the correct role.
 
 Additional gaps covered:
 
 | Capability | fortytwoservices | this module |
 | --- | --- | --- |
-| **Member + Owner packages sharing resources** in one catalog | Breaks — duplicate catalog associations | Deduplicates via `zipmap` on `catalog_resource_association_key` |
-| Group / Teams resources by **display name** | No — requires raw object IDs | Yes — resolves display names to object IDs internally |
-| **Per-package `access_type`** | No — role must be set per resource object | Yes — set once at the package level, fans out to all resources |
-| **SharePoint** by path suffix | No — requires full origin ID | Yes — `sharepoint_resources` + `sharepoint_base_url` |
-| **Structured OData filters** | No — raw filter string only | Yes — `dept_code`, `dept_name`, `include/exclude_title_prefixes`; raw `filter` still works as an escape hatch |
+| **Member + Owner packages sharing resources** in one catalog | No | Yes - deduplicates catalog associations |
+| Group / Teams resources by **display name** | No - requires raw object IDs | Yes - resolves display names to object IDs internally |
+| **Per-package `access_type`** | No - role must be set per resource object | Yes - set once at the package level, fans out to all resources |
+| **SharePoint** by path suffix | No - requires full origin ID | Yes - `sharepoint_resources` + `sharepoint_base_url` |
+| **Structured OData filters** | No - raw filter string only | Yes - `dept_code`, `dept_name`, `include/exclude_title_prefixes`; raw `filter` still works as an escape hatch |
 
 ## Known Limitations and Roadmap
 
 ### Catalog resource association removal
 
 Removing a resource from a catalog (or removing a SharePoint site association) is not currently supported. Catalog associations are created via
-`msgraph_resource_action` which issues a one-time POST to the Graph API and has no DELETE lifecycle. Terraform cannot destroy these associations —
+`msgraph_resource_action` which issues a one-time POST to the Graph API and has no DELETE lifecycle. Terraform cannot destroy these associations -
 removing a resource from your config will leave the association in Entra until it is deleted manually via the portal or Graph API.
 
 Tracking: [hashicorp/terraform-provider-azuread#1637](https://github.com/hashicorp/terraform-provider-azuread/issues/1637)
 
-Once the `azuread` provider adds native support for catalog resource associations (removing the need for the `msgraph_resource_action` workaround), this module will be updated to use it — enabling full create and destroy lifecycle management for all resource types.
+Once the `azuread` provider adds native support for catalog resource associations (removing the need for the `msgraph_resource_action` workaround), this module will be updated to use it - enabling full create and destroy lifecycle management for all resource types.
 
 ### Planned improvements
 
 - Native catalog association removal once provider support lands
-- `outputs.tf` — expose catalog IDs, access package IDs, and policy IDs for use in downstream modules
+- `outputs.tf` - expose catalog IDs, access package IDs, and policy IDs for use in downstream modules
 
 ## Reference
 
