@@ -94,18 +94,38 @@ variable "entitlement_catalogs" {
         })))
       })))
 
+      group_resources      = optional(list(string), []) # Entra ID security/M365 group display names — resolved to object IDs via data source
+      teams_resources      = optional(list(string), []) # Teams team display names — resolved to the backing M365 group object IDs via data source
+      sharepoint_resources = optional(list(string), []) # SharePoint site path suffixes e.g. "BrandDesigns" for /sites/BrandDesigns — requires sharepoint_base_url
+      sharepoint_base_url  = optional(string, "")       # Base SharePoint URL e.g. "https://contoso.sharepoint.com/sites" — required when sharepoint_resources is non-empty
+      access_type          = optional(string, "Member") # Role granted on all resolved resources in this package. "Member" or "Owner". Defaults to "Member"
+
       auto_assignment_policy = optional(object({
-        filter                      = string                   # OData filter expression identifying users to auto-assign, e.g. "(user.department -eq \"Engineering\")"
-        remove_when_target_leaves   = optional(bool, true)    # Revoke access when the user no longer matches the filter. Defaults to true
-        grace_period_before_removal = optional(string, "P7D") # ISO 8601 duration to wait before revoking access after a user leaves scope. Defaults to 7 days
+        filter                      = optional(string)            # Raw OData — if set, all structured fields below are ignored
+        dept_code                   = optional(string)            # extensionAttribute1 value e.g. "441000" — ignored if filter is set
+        dept_name                   = optional(string)            # Department display name e.g. "Engineering" — ignored if filter is set
+        exclude_title_prefixes      = optional(list(string), [])  # jobTitle -startsWith values to EXCLUDE — ignored if filter is set (member package pattern)
+        include_title_prefixes      = optional(list(string), [])  # jobTitle -startsWith values to INCLUDE — ignored if filter is set (owner package pattern)
+        remove_when_target_leaves   = optional(bool, true)        # Revoke access when the user no longer matches the filter. Defaults to true
+        grace_period_before_removal = optional(string, "P7D")     # ISO 8601 duration to wait before revoking access after a user leaves scope. Defaults to 7 days
       }))
 
-      resources = list(object({                             # List of resources, one resource per object
+      resources = optional(list(object({                    # Escape hatch — pass raw resource objects directly. Overrides group/teams/sharepoint_resources if non-empty
         display_name           = optional(string)           # Deprecated! Descriptive display name to be used for the Terraform Resource key
         resource_origin_system = string                     # The type of resource in the origin system. "SharePointOnline", "AadApplication", "AadGroup"
         resource_origin_id     = string                     # The ID of the Azure resource to be added to the Catalog and Access Package
-        access_type            = optional(string, "Member") # The role of access type to the specified resource. "Member" or "Owner" can be used if resource_origin_system is "AadGroup", uuid of role needs to be used if resource_origin_system is "AadApplication". Defaults to "Member"
-      }))
+        access_type            = optional(string, "Member") # Per-resource role override. "Member" or "Owner" for AadGroup, role uuid for AadApplication. Defaults to "Member"
+      })), [])
     }))
   }))
+
+  validation {
+    condition = alltrue([
+      for catalog in var.entitlement_catalogs : alltrue([
+        for pkg in catalog.access_packages :
+          length(pkg.sharepoint_resources) == 0 || pkg.sharepoint_base_url != ""
+      ])
+    ])
+    error_message = "sharepoint_base_url must be set on any access package that has sharepoint_resources."
+  }
 }
