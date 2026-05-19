@@ -182,6 +182,11 @@ Setting the raw `filter` field overrides all structured fields.
 | `resource_catalog_associations` | All resources associated with entitlement catalogs |
 | `resource_access_package_associations` | All resources associated with access packages |
 
+## Reference
+
+<!-- BEGIN_TF_DOCS -->
+<!-- END_TF_DOCS -->
+
 ## Credits
 
 This module builds on [terraform-azuread-entitlement-management](https://github.com/fortytwoservices/terraform-azuread-entitlement-management)

@@ -1,0 +1,25 @@
+name: Docs
+
+on:
+  push:
+    branches: ["main"]
+    paths: ["**.tf"]
+
+permissions:
+  contents: write
+
+jobs:
+  terraform-docs:
+    name: Generate terraform-docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - uses: terraform-docs/gh-actions@v1
+        with:
+          working-dir: .
+          output-file: README.md
+          output-method: inject
+          git-push: "true"
