@@ -101,13 +101,13 @@ variable "entitlement_catalogs" {
       access_type          = optional(string, "Member") # Role granted on all resolved resources in this package. "Member" or "Owner". Defaults to "Member"
 
       auto_assignment_policy = optional(object({
-        filter                      = optional(string)            # Raw OData — if set, all structured fields below are ignored
-        dept_code                   = optional(string)            # extensionAttribute1 value e.g. "441000" — ignored if filter is set
-        dept_name                   = optional(string)            # Department display name e.g. "Engineering" — ignored if filter is set
-        exclude_title_prefixes      = optional(list(string), [])  # jobTitle -startsWith values to EXCLUDE — ignored if filter is set (member package pattern)
-        include_title_prefixes      = optional(list(string), [])  # jobTitle -startsWith values to INCLUDE — ignored if filter is set (owner package pattern)
-        remove_when_target_leaves   = optional(bool, true)        # Revoke access when the user no longer matches the filter. Defaults to true
-        grace_period_before_removal = optional(string, "P7D")     # ISO 8601 duration to wait before revoking access after a user leaves scope. Defaults to 7 days
+        filter                      = optional(string)           # Raw OData — if set, all structured fields below are ignored
+        dept_code                   = optional(string)           # extensionAttribute1 value e.g. "441000" — ignored if filter is set
+        dept_name                   = optional(string)           # Department display name e.g. "Engineering" — ignored if filter is set
+        exclude_title_prefixes      = optional(list(string), []) # jobTitle -startsWith values to EXCLUDE — ignored if filter is set (member package pattern)
+        include_title_prefixes      = optional(list(string), []) # jobTitle -startsWith values to INCLUDE — ignored if filter is set (owner package pattern)
+        remove_when_target_leaves   = optional(bool, true)       # Revoke access when the user no longer matches the filter. Defaults to true
+        grace_period_before_removal = optional(string, "P7D")    # ISO 8601 duration to wait before revoking access after a user leaves scope. Defaults to 7 days
       }))
 
       resources = optional(list(object({                    # Escape hatch — pass raw resource objects directly. Overrides group/teams/sharepoint_resources if non-empty
@@ -123,7 +123,7 @@ variable "entitlement_catalogs" {
     condition = alltrue([
       for catalog in var.entitlement_catalogs : alltrue([
         for pkg in catalog.access_packages :
-          length(pkg.sharepoint_resources) == 0 || pkg.sharepoint_base_url != ""
+        length(pkg.sharepoint_resources) == 0 || pkg.sharepoint_base_url != ""
       ])
     ])
     error_message = "sharepoint_base_url must be set on any access package that has sharepoint_resources."

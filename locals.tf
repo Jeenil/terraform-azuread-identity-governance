@@ -55,34 +55,34 @@ locals {
       ? pair.pkg.auto_assignment_policy.filter
       : join(" and ", compact([
 
-          # dept match — dept_code and dept_name OR'd together, wrapped in parens
-          length(compact([
-            pair.pkg.auto_assignment_policy.dept_code != null ? "(user.extensionAttribute1 -eq \"${pair.pkg.auto_assignment_policy.dept_code}\")" : "",
-            pair.pkg.auto_assignment_policy.dept_name != null ? "(user.department -eq \"${pair.pkg.auto_assignment_policy.dept_name}\")" : "",
-          ])) > 0
-          ? "(${join(" or ", compact([
-              pair.pkg.auto_assignment_policy.dept_code != null ? "(user.extensionAttribute1 -eq \"${pair.pkg.auto_assignment_policy.dept_code}\")" : "",
-              pair.pkg.auto_assignment_policy.dept_name != null ? "(user.department -eq \"${pair.pkg.auto_assignment_policy.dept_name}\")" : "",
-            ]))})"
-          : null,
+        # dept match — dept_code and dept_name OR'd together, wrapped in parens
+        length(compact([
+          pair.pkg.auto_assignment_policy.dept_code != null ? "(user.extensionAttribute1 -eq \"${pair.pkg.auto_assignment_policy.dept_code}\")" : "",
+          pair.pkg.auto_assignment_policy.dept_name != null ? "(user.department -eq \"${pair.pkg.auto_assignment_policy.dept_name}\")" : "",
+        ])) > 0
+        ? "(${join(" or ", compact([
+          pair.pkg.auto_assignment_policy.dept_code != null ? "(user.extensionAttribute1 -eq \"${pair.pkg.auto_assignment_policy.dept_code}\")" : "",
+          pair.pkg.auto_assignment_policy.dept_name != null ? "(user.department -eq \"${pair.pkg.auto_assignment_policy.dept_name}\")" : "",
+        ]))})"
+        : null,
 
-          # exclude_title_prefixes — AND'd NOT conditions (member package pattern)
-          length(pair.pkg.auto_assignment_policy.exclude_title_prefixes) > 0
-          ? join(" and ", [
-              for prefix in pair.pkg.auto_assignment_policy.exclude_title_prefixes :
-              "(not (user.jobTitle -startsWith \"${prefix}\"))"
-            ])
-          : null,
+        # exclude_title_prefixes — AND'd NOT conditions (member package pattern)
+        length(pair.pkg.auto_assignment_policy.exclude_title_prefixes) > 0
+        ? join(" and ", [
+          for prefix in pair.pkg.auto_assignment_policy.exclude_title_prefixes :
+          "(not (user.jobTitle -startsWith \"${prefix}\"))"
+        ])
+        : null,
 
-          # include_title_prefixes — OR'd together, wrapped in parens (owner package pattern)
-          length(pair.pkg.auto_assignment_policy.include_title_prefixes) > 0
-          ? "(${join(" or ", [
-              for prefix in pair.pkg.auto_assignment_policy.include_title_prefixes :
-              "(user.jobTitle -startsWith \"${prefix}\")"
-            ])})"
-          : null,
+        # include_title_prefixes — OR'd together, wrapped in parens (owner package pattern)
+        length(pair.pkg.auto_assignment_policy.include_title_prefixes) > 0
+        ? "(${join(" or ", [
+          for prefix in pair.pkg.auto_assignment_policy.include_title_prefixes :
+          "(user.jobTitle -startsWith \"${prefix}\")"
+        ])})"
+        : null,
 
-        ]))
+      ]))
     )
   }
 
