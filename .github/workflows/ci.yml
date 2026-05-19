@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  pull_request:
+    paths: ["**.tf"]
+  push:
+    branches: ["main"]
+    paths: ["**.tf"]
+
+permissions:
+  contents: read
+
+jobs:
+  fmt:
+    name: Terraform format check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269ef065 # v3.1.2
+      - run: terraform fmt -check -recursive
+
+  validate:
+    name: Terraform validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269ef065 # v3.1.2
+      - run: terraform init -backend=false
+      - run: terraform validate
+
+  tflint:
+    name: TFLint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: terraform-linters/setup-tflint@19a52fbac37dacb22a09518e4ef6ee234f2d4987 # v4.0.0
+      - run: tflint --init
+      - run: tflint --recursive
+
+  branch-name:
+    name: Enforce branch naming
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Check branch name
+        run: |
+          BRANCH="${{ github.head_ref }}"
+          if [[ ! "$BRANCH" =~ ^(feat|fix|chore|docs|refactor)/.+ ]]; then
+            echo "Branch name '$BRANCH' does not match required pattern: feat/*, fix/*, chore/*, docs/*, refactor/*"
+            exit 1
+          fi
