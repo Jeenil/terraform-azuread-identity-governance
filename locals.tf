@@ -1,39 +1,129 @@
 ###   Local Variable - Identity Governance Source Variable transformation
 ############################################################################
 locals {
-  entitlement-catalogs = flatten([                    # Flattens the nested lists to a list with a depth of 1
-    for catalog in var.entitlement_catalogs : catalog # Iterates through all Entitlement Catalogs and creates a list of them
+
+  # Flat map of all access packages keyed by "catalog-package".
+  # Used as the base for resource resolution and filter assembly below.
+  _packages_flat = {
+    for pair in flatten([
+      for catalog in var.entitlement_catalogs : [
+        for pkg in catalog.access_packages : {
+          key     = "${catalog.display_name}-${pkg.display_name}"
+          catalog = catalog.display_name
+          pkg     = pkg
+        }
+      ]
+    ]) : pair.key => pair
+  }
+
+  # ── Resource list resolution ────────────────────────────────────────────────
+  # If resources is non-empty use it directly (escape hatch).
+  # Otherwise build from group_resources, teams_resources, sharepoint_resources.
+  # All resolved resources inherit the package-level access_type.
+  _resolved_resources = {
+    for key, pair in local._packages_flat :
+    key => length(pair.pkg.resources) > 0 ? pair.pkg.resources : concat(
+      [for g in pair.pkg.group_resources : {
+        display_name           = g
+        resource_origin_system = "AadGroup"
+        resource_origin_id     = data.azuread_group.resources[g].object_id
+        access_type            = pair.pkg.access_type
+      }],
+      [for t in pair.pkg.teams_resources : {
+        display_name           = t
+        resource_origin_system = "AadGroup"
+        resource_origin_id     = data.azuread_group.resources[t].object_id
+        access_type            = pair.pkg.access_type
+      }],
+      [for s in pair.pkg.sharepoint_resources : {
+        display_name           = s
+        resource_origin_system = "SharePointOnline"
+        resource_origin_id     = "${trimsuffix(pair.pkg.sharepoint_base_url, "/")}/${s}"
+        access_type            = pair.pkg.access_type
+      }]
+    )
+  }
+
+  # ── OData filter assembly ───────────────────────────────────────────────────
+  # If raw filter is set, pass it through unchanged — structured fields are ignored.
+  # Otherwise build the filter from dept_code, dept_name, exclude_title_prefixes,
+  # and include_title_prefixes. Null when auto_assignment_policy is not set.
+  _resolved_filter = {
+    for key, pair in local._packages_flat :
+    key => pair.pkg.auto_assignment_policy == null ? null : (
+      pair.pkg.auto_assignment_policy.filter != null
+      ? pair.pkg.auto_assignment_policy.filter
+      : join(" and ", compact([
+
+          # dept match — dept_code and dept_name OR'd together, wrapped in parens
+          length(compact([
+            pair.pkg.auto_assignment_policy.dept_code != null ? "(user.extensionAttribute1 -eq \"${pair.pkg.auto_assignment_policy.dept_code}\")" : "",
+            pair.pkg.auto_assignment_policy.dept_name != null ? "(user.department -eq \"${pair.pkg.auto_assignment_policy.dept_name}\")" : "",
+          ])) > 0
+          ? "(${join(" or ", compact([
+              pair.pkg.auto_assignment_policy.dept_code != null ? "(user.extensionAttribute1 -eq \"${pair.pkg.auto_assignment_policy.dept_code}\")" : "",
+              pair.pkg.auto_assignment_policy.dept_name != null ? "(user.department -eq \"${pair.pkg.auto_assignment_policy.dept_name}\")" : "",
+            ]))})"
+          : null,
+
+          # exclude_title_prefixes — AND'd NOT conditions (member package pattern)
+          length(pair.pkg.auto_assignment_policy.exclude_title_prefixes) > 0
+          ? join(" and ", [
+              for prefix in pair.pkg.auto_assignment_policy.exclude_title_prefixes :
+              "(not (user.jobTitle -startsWith \"${prefix}\"))"
+            ])
+          : null,
+
+          # include_title_prefixes — OR'd together, wrapped in parens (owner package pattern)
+          length(pair.pkg.auto_assignment_policy.include_title_prefixes) > 0
+          ? "(${join(" or ", [
+              for prefix in pair.pkg.auto_assignment_policy.include_title_prefixes :
+              "(user.jobTitle -startsWith \"${prefix}\")"
+            ])})"
+          : null,
+
+        ]))
+    )
+  }
+
+  # ── Upstream locals — updated to use resolved resources and filter ──────────
+
+  entitlement-catalogs = flatten([
+    for catalog in var.entitlement_catalogs : catalog
   ])
 
-  access-packages = flatten([                                      # Flattens the nested lists to a list with a depth of 1
-    for catalog in var.entitlement_catalogs : [                    # Iterates through all Entitlement Catalogs
-      for ap in catalog.access_packages : merge(ap, {              # Iterates through all Access Packages within each Catalog
-        catalog_key = catalog.display_name                         # Creates a reference key to the Entitlement Catalog
-        key         = "${catalog.display_name}-${ap.display_name}" # Creates a reference key for the Access Package
+  access-packages = flatten([
+    for catalog in var.entitlement_catalogs : [
+      for ap in catalog.access_packages : merge(ap, {
+        catalog_key = catalog.display_name
+        key         = "${catalog.display_name}-${ap.display_name}"
+        auto_assignment_policy = ap.auto_assignment_policy == null ? null : merge(ap.auto_assignment_policy, {
+          filter = local._resolved_filter["${catalog.display_name}-${ap.display_name}"]
+        })
       })
     ]
   ])
 
-  resources = flatten([                                                                                                                                                                                                                                 # Flattens the nested lists to a list with a depth of 1
-    for catalog in var.entitlement_catalogs : [                                                                                                                                                                                                         # Iterates through all Entitlement Catalogs
-      for ap in catalog.access_packages : [                                                                                                                                                                                                             # Iterates through all Access Packages within each Catalog
-        for resource in ap.resources : merge(resource, {                                                                                                                                                                                                # Iterates through all Resources within each Access Package, within each Catalog
-          catalog_key                             = catalog.display_name                                                                                                                                                                                # Creates a reference key to the Entitlement Catalog
-          access_package_key                      = "${catalog.display_name}-${ap.display_name}"                                                                                                                                                        # Creates a reference key to the Access Package
-          access_package_resource_association_key = "${catalog.display_name}-${ap.display_name}-${resource.display_name != null ? resource.display_name : "${resource.resource_origin_system}-${resource.resource_origin_id}-${resource.access_type}"}" # Creates a reference key for the Access Package Resource Associations
-          catalog_resource_association_key        = "${catalog.display_name}-${resource.display_name != null ? resource.display_name : "${resource.resource_origin_system}-${resource.resource_origin_id}-${resource.access_type}"}"                    # Creates a reference key to be used for the Catalog Resource Associations
+  resources = flatten([
+    for catalog in var.entitlement_catalogs : [
+      for ap in catalog.access_packages : [
+        for resource in local._resolved_resources["${catalog.display_name}-${ap.display_name}"] : merge(resource, {
+          catalog_key                             = catalog.display_name
+          access_package_key                      = "${catalog.display_name}-${ap.display_name}"
+          access_package_resource_association_key = "${catalog.display_name}-${ap.display_name}-${resource.display_name != null ? resource.display_name : "${resource.resource_origin_system}-${resource.resource_origin_id}-${resource.access_type}"}"
+          catalog_resource_association_key        = "${catalog.display_name}-${resource.display_name != null ? resource.display_name : "${resource.resource_origin_system}-${resource.resource_origin_id}-${resource.access_type}"}"
         })
       ]
     ]
   ])
 
-  resource-catalog-associations-filtered = [                                                                                                                 # Goes through the list of resource objects and removes duplicates, keeping the last instance in the list
-    for resource in values(zipmap(local.resources[*].catalog_resource_association_key, local.resources)) : resource                                           #
-    if resource.resource_origin_system != "SharePointOnline"                                                                                                  # SharePointOnline is handled via msgraph due to https://github.com/hashicorp/terraform-provider-azuread/issues/1637
-  ]                                                                                                                                                           #
+  resource-catalog-associations-filtered = [
+    for resource in values(zipmap(local.resources[*].catalog_resource_association_key, local.resources)) : resource
+    if resource.resource_origin_system != "SharePointOnline"
+  ]
 
-  sharepoint-catalog-associations-filtered = [                                                                                                                # Deduplicated list of SharePointOnline catalog associations
-    for resource in values(zipmap(local.resources[*].catalog_resource_association_key, local.resources)) : resource                                           #
-    if resource.resource_origin_system == "SharePointOnline"                                                                                                  #
-  ]                                                                                                                                                           #
+  sharepoint-catalog-associations-filtered = [
+    for resource in values(zipmap(local.resources[*].catalog_resource_association_key, local.resources)) : resource
+    if resource.resource_origin_system == "SharePointOnline"
+  ]
 }
