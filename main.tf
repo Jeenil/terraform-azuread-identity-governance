@@ -366,12 +366,7 @@ data "msgraph_resource" "sharepoint_catalog_resource_roles" {
     "$expand" = ["resource"]
   }
   response_export_values = {
-    all                = "@"
-    id                 = "value.#(displayName%\"*Members\").id"
-    display_name       = "value.#(displayName%\"*Members\").displayName"
-    origin_id          = "value.#(displayName%\"*Members\").originId"
-    owner_display_name = "value.#(displayName%\"*Owners\").displayName"
-    owner_origin_id    = "value.#(displayName%\"*Owners\").originId"
+    all = "@"
   }
 
   depends_on = [
@@ -391,9 +386,9 @@ resource "msgraph_resource_action" "sharepoint-access-package-associations" {
 
   body = {
     role = {
-      displayName  = each.value.access_type == "Owner" ? data.msgraph_resource.sharepoint_catalog_resource_roles[each.key].output.owner_display_name : data.msgraph_resource.sharepoint_catalog_resource_roles[each.key].output.display_name
+      displayName  = tostring(local._sp_selected_role[each.key]["displayName"])
       originSystem = "SharePointOnline"
-      originId     = each.value.access_type == "Owner" ? data.msgraph_resource.sharepoint_catalog_resource_roles[each.key].output.owner_origin_id : data.msgraph_resource.sharepoint_catalog_resource_roles[each.key].output.origin_id
+      originId     = tostring(local._sp_selected_role[each.key]["originId"])
       resource = {
         id = data.msgraph_resource.sharepoint_catalog_resources[each.key].output.id
       }

@@ -170,6 +170,7 @@ using the standard Azure pipeline authentication pattern (`ARM_*` environment va
 | `sharepoint_resources` | SharePoint site path suffixes e.g. `"BrandDesigns"` | `[]` |
 | `sharepoint_base_url` | Base SharePoint URL - required when `sharepoint_resources` is non-empty | `""` |
 | `access_type` | Role granted on all resources in this package. `"Member"` or `"Owner"` for `AadGroup` and `SharePointOnline` (resolved to the site Members/Owners permission group); role UUID for `AadApplication` | `"Member"` |
+| `sharepoint_role_origin_id` | SharePoint permission group originId to filter the role lookup e.g. `"3"` for the Owners group (SP default). When `null`, uses the first role returned (Members). Set on owner packages to guarantee the Owners role is selected regardless of site group ordering. | `null` |
 | `resources` | Raw resource objects - escape hatch, overrides display-name inputs if non-empty | `[]` |
 | `auto_assignment_policy` | Auto-assignment policy configuration | `null` |
 

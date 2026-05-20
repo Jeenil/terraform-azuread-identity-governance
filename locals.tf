@@ -126,4 +126,16 @@ locals {
     for resource in values(zipmap(local.resources[*].catalog_resource_association_key, local.resources)) : resource
     if resource.resource_origin_system == "SharePointOnline"
   ]
+
+  # Pick the correct SP permission group role for each access package association.
+  # Filters the full role list returned by the data source by matching the display name
+  # suffix — "Owners" for owner packages, "Members" for member packages.
+  # This avoids hardcoding originId values and works regardless of role list ordering.
+  _sp_selected_role = {
+    for key, resource in { for r in local.resources : r.access_package_resource_association_key => r if r.resource_origin_system == "SharePointOnline" } :
+    key => [
+      for role in data.msgraph_resource.sharepoint_catalog_resource_roles[key].output.all.value :
+      role if endswith(lower(tostring(role["displayName"])), resource.access_type == "Owner" ? " owners" : " members")
+    ][0]
+  }
 }
