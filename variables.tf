@@ -94,23 +94,23 @@ variable "entitlement_catalogs" {
         })))
       })))
 
-      group_resources      = optional(list(string), []) # Entra ID security/M365 group display names — resolved to object IDs via data source
-      teams_resources      = optional(list(string), []) # Teams team display names — resolved to the backing M365 group object IDs via data source
-      sharepoint_resources   = optional(list(string), []) # SharePoint site path suffixes e.g. "BrandDesigns" for /sites/BrandDesigns — requires sharepoint_base_url
-      sharepoint_base_url    = optional(string, "")       # Base SharePoint URL e.g. "https://contoso.sharepoint.com/sites" — required when sharepoint_resources is non-empty
-      access_type            = optional(string, "Member") # Role granted on all resolved resources in this package. "Member" or "Owner". Defaults to "Member"
+      group_resources      = optional(list(string), []) # Entra ID security/M365 group display names :resolved to object IDs via data source
+      teams_resources      = optional(list(string), []) # Teams team display names :resolved to the backing M365 group object IDs via data source
+      sharepoint_resources = optional(list(string), []) # SharePoint site path suffixes e.g. "BrandDesigns" for /sites/BrandDesigns :requires sharepoint_base_url
+      sharepoint_base_url  = optional(string, "")       # Base SharePoint URL e.g. "https://contoso.sharepoint.com/sites" :required when sharepoint_resources is non-empty
+      access_type          = optional(string, "Member") # Role granted on all resolved resources in this package. "Member" or "Owner". Defaults to "Member"
 
       auto_assignment_policy = optional(object({
-        filter                      = optional(string)           # Raw OData — if set, all structured fields below are ignored
-        dept_code                   = optional(string)           # extensionAttribute1 value e.g. "441000" — ignored if filter is set
-        dept_name                   = optional(string)           # Department display name e.g. "Engineering" — ignored if filter is set
-        exclude_title_prefixes      = optional(list(string), []) # jobTitle -startsWith values to EXCLUDE — ignored if filter is set (member package pattern)
-        include_title_prefixes      = optional(list(string), []) # jobTitle -startsWith values to INCLUDE — ignored if filter is set (owner package pattern)
+        filter                      = optional(string)           # Raw OData :if set, all structured fields below are ignored
+        dept_code                   = optional(string)           # extensionAttribute1 value e.g. "441000" :ignored if filter is set
+        dept_name                   = optional(string)           # Department display name e.g. "Engineering" :ignored if filter is set
+        exclude_title_prefixes      = optional(list(string), []) # jobTitle -startsWith values to EXCLUDE :ignored if filter is set (member package pattern)
+        include_title_prefixes      = optional(list(string), []) # jobTitle -startsWith values to INCLUDE :ignored if filter is set (owner package pattern)
         remove_when_target_leaves   = optional(bool, true)       # Revoke access when the user no longer matches the filter. Defaults to true
         grace_period_before_removal = optional(string, "P7D")    # ISO 8601 duration to wait before revoking access after a user leaves scope. Defaults to 7 days
       }))
 
-      resources = optional(list(object({                    # Escape hatch — pass raw resource objects directly. Overrides group/teams/sharepoint_resources if non-empty
+      resources = optional(list(object({                    # Escape hatch :pass raw resource objects directly. Overrides group/teams/sharepoint_resources if non-empty
         display_name           = optional(string)           # Deprecated! Descriptive display name to be used for the Terraform Resource key
         resource_origin_system = string                     # The type of resource in the origin system. "SharePointOnline", "AadApplication", "AadGroup"
         resource_origin_id     = string                     # The ID of the Azure resource to be added to the Catalog and Access Package
