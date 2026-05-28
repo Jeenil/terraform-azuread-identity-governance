@@ -490,7 +490,10 @@ resource "terraform_data" "force-remove-assignments" {
     EOT
   }
 
-  depends_on = [azuread_access_package.access-packages]
+  depends_on = [
+    azuread_access_package.access-packages,
+    msgraph_resource.auto-assignment-policies,
+  ]
 }
 
 ###   Identity Governance - Resource Access Package Associations for AadApplication due to https://github.com/hashicorp/terraform-provider-azuread/issues/1066
