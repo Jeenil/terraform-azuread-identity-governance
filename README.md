@@ -132,15 +132,6 @@ When using structured fields, the module builds the filter as follows:
 
 Setting the raw `filter` field overrides all structured fields.
 
-## Requirements
-
-| Name | Version |
-| --- | --- |
-| terraform | >= 1.4.6 |
-| azuread | >= 2.39.0 |
-| msgraph | >= 0.3.0 |
-| null | >= 3.0.0 |
-
 ### SharePoint catalog onboarding
 
 SharePoint site catalog associations are created via a `null_resource` `local-exec` provisioner.
@@ -151,50 +142,6 @@ The machine running `terraform apply` must have:
 
 These are the same credentials used by the `azuread` provider and are set automatically when
 using the standard Azure pipeline authentication pattern (`ARM_*` environment variables).
-
-## Inputs
-
-| Name | Description | Type | Default | Required |
-| --- | --- | --- | --- | --- |
-| `connected_organizations` | Connected organizations for access package policies | `list(object)` | `[]` | no |
-| `entitlement_catalogs` | Entitlement catalogs, access packages, and policies | `list(object)` | - | yes |
-
-### Access package fields
-
-| Name | Description | Default |
-| --- | --- | --- |
-| `display_name` | Access package display name | required |
-| `description` | Access package description | - |
-| `group_resources` | Entra group display names - resolved to object IDs | `[]` |
-| `teams_resources` | Teams team display names - resolved to M365 group object IDs | `[]` |
-| `sharepoint_resources` | SharePoint site path suffixes e.g. `"BrandDesigns"` | `[]` |
-| `sharepoint_base_url` | Base SharePoint URL - required when `sharepoint_resources` is non-empty | `""` |
-| `access_type` | Role granted on all resources in this package. `"Member"` or `"Owner"` for `AadGroup` and `SharePointOnline` (resolved to the site Members/Owners permission group); role UUID for `AadApplication` | `"Member"` |
-| `sharepoint_role_origin_id` | SharePoint permission group originId to filter the role lookup e.g. `"3"` for the Owners group (SP default). When `null`, uses the first role returned (Members). Set on owner packages to guarantee the Owners role is selected regardless of site group ordering. | `null` |
-| `resources` | Raw resource objects - escape hatch, overrides display-name inputs if non-empty | `[]` |
-| `auto_assignment_policy` | Auto-assignment policy configuration | `null` |
-
-### Auto-assignment policy fields
-
-| Name | Description | Default |
-| --- | --- | --- |
-| `filter` | Raw OData expression - overrides all structured fields below | `null` |
-| `dept_code` | `extensionAttribute1` value e.g. `"441000"` | `null` |
-| `dept_name` | Department display name e.g. `"Engineering"` | `null` |
-| `exclude_title_prefixes` | `jobTitle -startsWith` values to exclude (member package pattern) | `[]` |
-| `include_title_prefixes` | `jobTitle -startsWith` values to include (owner package pattern) | `[]` |
-| `remove_when_target_leaves` | Revoke access when user no longer matches the filter | `true` |
-| `grace_period_before_removal` | ISO 8601 grace period before revoking access | `"P7D"` |
-
-## Outputs
-
-| Name | Description |
-| --- | --- |
-| `entitlement_catalogs` | All entitlement catalogs created by this module |
-| `access_packages` | All access packages created by this module |
-| `assignment_policies` | All access package assignment policies created by this module |
-| `resource_catalog_associations` | All resources associated with entitlement catalogs |
-| `resource_access_package_associations` | All resources associated with access packages |
 
 ## Why not use fortytwoservices/terraform-azuread-entitlement-management?
 
@@ -225,6 +172,33 @@ Tracking: [hashicorp/terraform-provider-azuread#1637](https://github.com/hashico
 
 Once the `azuread` provider adds native support for catalog resource associations this module will
 be updated to use it, enabling full create and destroy lifecycle management.
+
+### Graph API 429 throttling on plans with SharePoint resources
+
+When this module is used with `sharepoint_resources`, each SharePoint site requires two
+sequential `data "msgraph_resource"` lookups per access package (catalog resource lookup, then role lookup).
+Terraform fires all of these in parallel by default. With more than a handful of SharePoint
+resources in a single state file, the Identity Governance endpoint returns `429 Too Many
+Requests`.
+
+The `microsoft/msgraph` provider retries on 429 but the azure-sdk `MaxRetryDelay` defaults to
+60 s. The Identity Governance endpoint returns `Retry-After` values up to 315 s, so the SDK
+retries too early, re-hits 429, and exhausts its attempts before the throttle window clears.
+
+**Workaround:** pass `-parallelism=1` to `terraform plan` to force sequential data source
+reads. This avoids hitting the rate limit entirely at the cost of slower plans.
+
+```bash
+terraform plan -parallelism=1
+```
+
+**Tracking:** [microsoft/terraform-provider-msgraph#118](https://github.com/microsoft/terraform-provider-msgraph/issues/118) - fix in [PR #119](https://github.com/microsoft/terraform-provider-msgraph/pull/119)
+
+**Structural improvement:** split your Terraform state so each root module manages one catalog.
+Each plan then only reads data sources for the catalog that changed (~5 calls vs ~30), reducing
+the chance of hitting the rate limit. `-parallelism=1` is still required until
+[PR #119](https://github.com/microsoft/terraform-provider-msgraph/pull/119) is merged and the
+provider version is bumped - once it is, the parallelism override can be removed.
 
 ### Planned improvements
 
