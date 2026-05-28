@@ -1,8 +1,7 @@
 name: Docs
 
 on:
-  push:
-    branches: ["main"]
+  pull_request:
     paths: ["**.tf"]
 
 permissions:
@@ -15,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ github.event.pull_request.head.ref }}
 
       - uses: terraform-docs/gh-actions@v1
         with:
