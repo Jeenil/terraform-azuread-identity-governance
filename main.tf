@@ -493,6 +493,7 @@ resource "terraform_data" "force-remove-assignments" {
   depends_on = [
     azuread_access_package.access-packages,
     msgraph_resource.auto-assignment-policies,
+    azuread_access_package_assignment_policy.assignment_policies,
   ]
 }
 
