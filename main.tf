@@ -198,6 +198,10 @@ resource "msgraph_resource" "auto-assignment-policies" {
       removeAccessWhenTargetLeavesAllowedTargets = each.value.auto_assignment_policy.remove_when_target_leaves
       gracePeriodBeforeAccessRemoval             = each.value.auto_assignment_policy.grace_period_before_removal
     }
+    accessPackageNotificationSettings = {
+      "@odata.type"                    = "#microsoft.graph.accessPackageNotificationSettings"
+      isAssignmentNotificationDisabled = true
+    }
     accessPackage = {
       id = azuread_access_package.access-packages[each.key].id
     }
