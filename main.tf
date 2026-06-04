@@ -174,41 +174,87 @@ resource "azuread_access_package_assignment_policy" "assignment_policies" {
 ###   Created only when auto_assignment_policy is defined on an access package.
 ###   These are separate from request-based policies - Entra ID automatically
 ###   grants access to users matching the OData filter without requiring a request.
-###   Uses msgraph_resource directly because the azuread provider does not yet support
-###   automaticRequestSettings (https://github.com/hashicorp/terraform-provider-azuread/issues/1449)
+###   Uses null_resource + local-exec (like SharePoint catalog associations) because:
+###     1. The azuread provider does not yet support automaticRequestSettings
+###        (https://github.com/hashicorp/terraform-provider-azuread/issues/1449)
+###     2. msgraph_resource POSTs unconditionally — re-applying when the policy already
+###        exists in Azure (but not in state) would error or create a duplicate. This
+###        pattern checks via Graph API before creating, making it safe to apply repeatedly.
 ####################################################################################################
-resource "msgraph_resource" "auto-assignment-policies" {
+resource "null_resource" "auto-assignment-policies" {
   for_each = { for ap in local.access-packages : ap.key => ap if ap.auto_assignment_policy != null }
 
-  url = "/identityGovernance/entitlementManagement/assignmentPolicies"
-
-  body = {
-    displayName        = "${each.value.display_name}-auto-assignment-policy"
-    description        = each.value.description
-    allowedTargetScope = "specificDirectoryUsers"
-    specificAllowedTargets = [
-      {
-        "@odata.type"  = "#microsoft.graph.attributeRuleMembers"
-        description    = "Attribute rule for auto-assignment"
-        membershipRule = each.value.auto_assignment_policy.filter
-      }
-    ]
-    automaticRequestSettings = {
-      requestAccessForAllowedTargets             = true
-      removeAccessWhenTargetLeavesAllowedTargets = each.value.auto_assignment_policy.remove_when_target_leaves
-      gracePeriodBeforeAccessRemoval             = each.value.auto_assignment_policy.grace_period_before_removal
-    }
-    accessPackageNotificationSettings = {
-      "@odata.type"                    = "#microsoft.graph.accessPackageNotificationSettings"
-      isAssignmentNotificationDisabled = true
-    }
-    accessPackage = {
-      id = azuread_access_package.access-packages[each.key].id
-    }
+  triggers = {
+    access_package_id           = azuread_access_package.access-packages[each.key].id
+    display_name                = each.value.display_name
+    description                 = each.value.description
+    filter                      = each.value.auto_assignment_policy.filter
+    remove_when_target_leaves   = tostring(each.value.auto_assignment_policy.remove_when_target_leaves)
+    grace_period_before_removal = each.value.auto_assignment_policy.grace_period_before_removal
   }
 
-  response_export_values = {
-    id = "id"
+  provisioner "local-exec" {
+    interpreter = ["/bin/bash", "-c"]
+    command     = <<-EOT
+      set -euo pipefail
+
+      PACKAGE_ID="${self.triggers.access_package_id}"
+      GRAPH_URL="https://graph.microsoft.com/v1.0"
+
+      token=$(curl -sf -X POST \
+        "https://login.microsoftonline.com/$ARM_TENANT_ID/oauth2/v2.0/token" \
+        --data-urlencode "grant_type=client_credentials" \
+        --data-urlencode "client_id=$ARM_CLIENT_ID" \
+        --data-urlencode "client_secret=$ARM_CLIENT_SECRET" \
+        --data-urlencode "scope=https://graph.microsoft.com/.default" \
+        | jq -r '.access_token')
+
+      count=$(curl -sf \
+        -H "Authorization: Bearer $token" \
+        -G "$GRAPH_URL/identityGovernance/entitlementManagement/assignmentPolicies" \
+        --data-urlencode "\$filter=accessPackage/id eq '$PACKAGE_ID' and allowedTargetScope eq 'specificDirectoryUsers'" \
+        | jq '.value | length')
+
+      if [ "$count" -gt 0 ]; then
+        echo "[=] Auto-assignment policy already exists for package $PACKAGE_ID — skipping"
+        exit 0
+      fi
+
+      body=$(jq -n \
+        --arg package_id "$PACKAGE_ID" \
+        --arg display_name "${self.triggers.display_name}-auto-assignment-policy" \
+        --arg description "${self.triggers.description}" \
+        --arg filter "${self.triggers.filter}" \
+        --arg remove_when_leaves "${self.triggers.remove_when_target_leaves}" \
+        --arg grace_period "${self.triggers.grace_period_before_removal}" \
+        '{
+          displayName: $display_name,
+          description: $description,
+          allowedTargetScope: "specificDirectoryUsers",
+          specificAllowedTargets: [{
+            "@odata.type": "#microsoft.graph.attributeRuleMembers",
+            description: "Attribute rule for auto-assignment",
+            membershipRule: $filter
+          }],
+          automaticRequestSettings: {
+            requestAccessForAllowedTargets: true,
+            removeAccessWhenTargetLeavesAllowedTargets: ($remove_when_leaves == "true"),
+            gracePeriodBeforeAccessRemoval: $grace_period
+          },
+          accessPackageNotificationSettings: {
+            "@odata.type": "#microsoft.graph.accessPackageNotificationSettings",
+            isAssignmentNotificationDisabled: true
+          },
+          accessPackage: {id: $package_id}
+        }')
+
+      curl -sf -X POST \
+        -H "Authorization: Bearer $token" \
+        -H "Content-Type: application/json" \
+        "$GRAPH_URL/identityGovernance/entitlementManagement/assignmentPolicies" \
+        -d "$body" > /dev/null
+      echo "[+] Created auto-assignment policy for package $PACKAGE_ID"
+    EOT
   }
 
   depends_on = [
@@ -300,7 +346,7 @@ resource "terraform_data" "force-remove-assignments" {
 
   depends_on = [
     azuread_access_package.access-packages,
-    msgraph_resource.auto-assignment-policies,
+    null_resource.auto-assignment-policies,
     azuread_access_package_assignment_policy.assignment_policies,
   ]
 }
