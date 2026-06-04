@@ -177,7 +177,7 @@ resource "azuread_access_package_assignment_policy" "assignment_policies" {
 ###   Uses null_resource + local-exec (like SharePoint catalog associations) because:
 ###     1. The azuread provider does not yet support automaticRequestSettings
 ###        (https://github.com/hashicorp/terraform-provider-azuread/issues/1449)
-###     2. msgraph_resource POSTs unconditionally — re-applying when the policy already
+###     2. msgraph_resource POSTs unconditionally - re-applying when the policy already
 ###        exists in Azure (but not in state) would error or create a duplicate. This
 ###        pattern checks via Graph API before creating, making it safe to apply repeatedly.
 ####################################################################################################
@@ -216,7 +216,7 @@ resource "null_resource" "auto-assignment-policies" {
         | jq '.value | length')
 
       if [ "$count" -gt 0 ]; then
-        echo "[=] Auto-assignment policy already exists for package $PACKAGE_ID — skipping"
+        echo "[=] Auto-assignment policy already exists for package $PACKAGE_ID - skipping"
         exit 0
       fi
 
@@ -424,7 +424,7 @@ data "msgraph_resource" "resource_access_package_catalog_resource_roles" {
 
 ###   Identity Governance - Resource Catalog Associations for SharePointOnline
 ###   Uses null_resource + local-exec to idempotently onboard SP resources to the catalog.
-###   Checks via Graph API before POSTing — skips if already onboarded.
+###   Checks via Graph API before POSTing - skips if already onboarded.
 ###   ARM_CLIENT_ID, ARM_CLIENT_SECRET, ARM_TENANT_ID must be set in the environment
 ###   (the azuread provider sets these automatically from its own authentication config).
 ###################################################################
