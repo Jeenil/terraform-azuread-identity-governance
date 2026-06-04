@@ -177,7 +177,7 @@ resource "azuread_access_package_assignment_policy" "assignment_policies" {
 ###   Uses null_resource + local-exec (like SharePoint catalog associations) because:
 ###     1. The azuread provider does not yet support automaticRequestSettings
 ###        (https://github.com/hashicorp/terraform-provider-azuread/issues/1449)
-###     2. msgraph_resource POSTs unconditionally - re-applying when the policy already
+###     2. msgraph_resource POSTs unconditionally re-applying when the policy already
 ###        exists in Azure (but not in state) would error or create a duplicate. This
 ###        pattern checks via Graph API before creating, making it safe to apply repeatedly.
 ####################################################################################################
