@@ -92,6 +92,14 @@ locals {
     for catalog in var.entitlement_catalogs : catalog
   ])
 
+  # Resolves to the Entra catalog ID regardless of whether this state created it or looked it up.
+  catalog_ids = {
+    for catalog in local.entitlement-catalogs : catalog.display_name =>
+      catalog.create_catalog
+        ? azuread_access_package_catalog.entitlement-catalogs[catalog.display_name].id
+        : data.azuread_access_package_catalog.existing[catalog.display_name].id
+  }
+
   access-packages = flatten([
     for catalog in var.entitlement_catalogs : [
       for ap in catalog.access_packages : merge(ap, {
