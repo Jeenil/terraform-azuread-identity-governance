@@ -271,5 +271,3 @@ provider version is bumped - once it is, the parallelism override can be removed
 This module builds on [terraform-azuread-entitlement-management](https://github.com/fortytwoservices/terraform-azuread-entitlement-management)
 by [fortytwoservices](https://github.com/fortytwoservices), used under the MIT License.
 The catalog, access package, approval, and access review resource foundations originate from that module.
-
-Canary.
