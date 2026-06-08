@@ -195,10 +195,19 @@ resource "null_resource" "auto-assignment-policies" {
 
   provisioner "local-exec" {
     interpreter = ["/bin/bash", "-c"]
-    command     = <<-EOT
+    # Values are passed as env vars rather than interpolated into the script body so
+    # that OData filter strings (which contain double quotes) don't break the shell.
+    environment = {
+      PACKAGE_ID         = self.triggers.access_package_id
+      DISPLAY_NAME       = self.triggers.display_name
+      DESCRIPTION        = self.triggers.description
+      FILTER             = self.triggers.filter
+      REMOVE_WHEN_LEAVES = self.triggers.remove_when_target_leaves
+      GRACE_PERIOD       = self.triggers.grace_period_before_removal
+    }
+    command = <<-EOT
       set -euo pipefail
 
-      PACKAGE_ID="${self.triggers.access_package_id}"
       GRAPH_URL="https://graph.microsoft.com/v1.0"
 
       token=$(curl -sf -X POST \
@@ -222,11 +231,11 @@ resource "null_resource" "auto-assignment-policies" {
 
       body=$(jq -n \
         --arg package_id "$PACKAGE_ID" \
-        --arg display_name "${self.triggers.display_name}-auto-assignment-policy" \
-        --arg description "${self.triggers.description}" \
-        --arg filter "${self.triggers.filter}" \
-        --arg remove_when_leaves "${self.triggers.remove_when_target_leaves}" \
-        --arg grace_period "${self.triggers.grace_period_before_removal}" \
+        --arg display_name "$DISPLAY_NAME-auto-assignment-policy" \
+        --arg description "$DESCRIPTION" \
+        --arg filter "$FILTER" \
+        --arg remove_when_leaves "$REMOVE_WHEN_LEAVES" \
+        --arg grace_period "$GRACE_PERIOD" \
         '{
           displayName: $display_name,
           description: $description,
