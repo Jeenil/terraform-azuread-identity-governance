@@ -24,7 +24,7 @@ resource "msgraph_resource" "connected_organizations" {
 ###   Identity Governance - Entitlement Catalogs
 ###################################################
 resource "azuread_access_package_catalog" "entitlement-catalogs" {
-  for_each = { for catalog in local.entitlement-catalogs : catalog.display_name => catalog }
+  for_each = { for catalog in local.entitlement-catalogs : catalog.display_name => catalog if catalog.create_catalog }
 
   display_name       = each.key
   description        = each.value.description
@@ -38,7 +38,7 @@ resource "azuread_access_package_catalog" "entitlement-catalogs" {
 resource "azuread_access_package" "access-packages" {
   for_each = { for ap in local.access-packages : ap.key => ap }
 
-  catalog_id   = azuread_access_package_catalog.entitlement-catalogs[each.value.catalog_key].id
+  catalog_id   = local.catalog_ids[each.value.catalog_key]
   display_name = each.value.display_name
   description  = each.value.description
   hidden       = try(each.value.hidden, null)
@@ -195,10 +195,19 @@ resource "null_resource" "auto-assignment-policies" {
 
   provisioner "local-exec" {
     interpreter = ["/bin/bash", "-c"]
-    command     = <<-EOT
+    # Values are passed as env vars rather than interpolated into the script body so
+    # that OData filter strings (which contain double quotes) don't break the shell.
+    environment = {
+      PACKAGE_ID         = self.triggers.access_package_id
+      DISPLAY_NAME       = self.triggers.display_name
+      DESCRIPTION        = self.triggers.description
+      FILTER             = self.triggers.filter
+      REMOVE_WHEN_LEAVES = self.triggers.remove_when_target_leaves
+      GRACE_PERIOD       = self.triggers.grace_period_before_removal
+    }
+    command = <<-EOT
       set -euo pipefail
 
-      PACKAGE_ID="${self.triggers.access_package_id}"
       GRAPH_URL="https://graph.microsoft.com/v1.0"
 
       token=$(curl -sf -X POST \
@@ -222,11 +231,11 @@ resource "null_resource" "auto-assignment-policies" {
 
       body=$(jq -n \
         --arg package_id "$PACKAGE_ID" \
-        --arg display_name "${self.triggers.display_name}-auto-assignment-policy" \
-        --arg description "${self.triggers.description}" \
-        --arg filter "${self.triggers.filter}" \
-        --arg remove_when_leaves "${self.triggers.remove_when_target_leaves}" \
-        --arg grace_period "${self.triggers.grace_period_before_removal}" \
+        --arg display_name "$DISPLAY_NAME-auto-assignment-policy" \
+        --arg description "$DESCRIPTION" \
+        --arg filter "$FILTER" \
+        --arg remove_when_leaves "$REMOVE_WHEN_LEAVES" \
+        --arg grace_period "$GRACE_PERIOD" \
         '{
           displayName: $display_name,
           description: $description,
@@ -356,7 +365,7 @@ resource "terraform_data" "force-remove-assignments" {
 resource "azuread_access_package_resource_catalog_association" "resource-catalog-associations" {
   for_each = { for resource in local.resource-catalog-associations-filtered : resource.catalog_resource_association_key => resource }
 
-  catalog_id             = azuread_access_package_catalog.entitlement-catalogs[each.value.catalog_key].id
+  catalog_id             = local.catalog_ids[each.value.catalog_key]
   resource_origin_id     = each.value.resource_origin_id
   resource_origin_system = each.value.resource_origin_system
 
@@ -383,7 +392,7 @@ resource "azuread_access_package_resource_package_association" "resource-access-
 
 data "msgraph_resource" "resource_access_package_catalog_resources" {
   for_each = { for resource in local.resources : resource.access_package_resource_association_key => resource if resource.resource_origin_system == "AadApplication" }
-  url      = "/identityGovernance/entitlementManagement/catalogs/${azuread_access_package_catalog.entitlement-catalogs[each.value.catalog_key].id}/resources"
+  url      = "/identityGovernance/entitlementManagement/catalogs/${local.catalog_ids[each.value.catalog_key]}/resources"
   query_parameters = {
     "$filter" = ["(originId eq '${each.value.resource_origin_id}')"]
     "$expand" = ["scopes"]
@@ -403,7 +412,7 @@ data "msgraph_resource" "resource_access_package_catalog_resources" {
 
 data "msgraph_resource" "resource_access_package_catalog_resource_roles" {
   for_each = { for resource in local.resources : resource.access_package_resource_association_key => resource if resource.resource_origin_system == "AadApplication" }
-  url      = "/identityGovernance/entitlementManagement/catalogs/${azuread_access_package_catalog.entitlement-catalogs[each.value.catalog_key].id}/resourceRoles"
+  url      = "/identityGovernance/entitlementManagement/catalogs/${local.catalog_ids[each.value.catalog_key]}/resourceRoles"
   query_parameters = {
     "$filter" = ["(originSystem eq 'AadApplication' and resource/id eq '${data.msgraph_resource.resource_access_package_catalog_resources[each.key].output.id}')"]
     "$expand" = ["resource"]
@@ -432,7 +441,7 @@ resource "null_resource" "sharepoint-catalog-associations" {
   for_each = { for resource in local.sharepoint-catalog-associations-filtered : resource.catalog_resource_association_key => resource }
 
   triggers = {
-    catalog_id = azuread_access_package_catalog.entitlement-catalogs[each.value.catalog_key].id
+    catalog_id = local.catalog_ids[each.value.catalog_key]
     origin_id  = each.value.resource_origin_id
   }
 
@@ -477,7 +486,7 @@ resource "null_resource" "sharepoint-catalog-associations" {
 
 data "msgraph_resource" "sharepoint_catalog_resources" {
   for_each = { for resource in local.resources : resource.access_package_resource_association_key => resource if resource.resource_origin_system == "SharePointOnline" }
-  url      = "/identityGovernance/entitlementManagement/catalogs/${azuread_access_package_catalog.entitlement-catalogs[each.value.catalog_key].id}/resources"
+  url      = "/identityGovernance/entitlementManagement/catalogs/${local.catalog_ids[each.value.catalog_key]}/resources"
   query_parameters = {
     "$filter" = ["(originId eq '${each.value.resource_origin_id}')"]
     "$expand" = ["scopes"]
@@ -496,7 +505,7 @@ data "msgraph_resource" "sharepoint_catalog_resources" {
 
 data "msgraph_resource" "sharepoint_catalog_resource_roles" {
   for_each = { for resource in local.resources : resource.access_package_resource_association_key => resource if resource.resource_origin_system == "SharePointOnline" }
-  url      = "/identityGovernance/entitlementManagement/catalogs/${azuread_access_package_catalog.entitlement-catalogs[each.value.catalog_key].id}/resourceRoles"
+  url      = "/identityGovernance/entitlementManagement/catalogs/${local.catalog_ids[each.value.catalog_key]}/resourceRoles"
   query_parameters = {
     "$filter" = ["(originSystem eq 'SharePointOnline' and resource/id eq '${data.msgraph_resource.sharepoint_catalog_resources[each.key].output.id}')"]
     "$expand" = ["resource"]

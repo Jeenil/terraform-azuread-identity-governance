@@ -21,6 +21,7 @@ variable "entitlement_catalogs" {
     description        = optional(string)      # Description of the Entitlement Catalog
     externally_visible = optional(bool, false) # If the Entitlement Catalog should be visible outside of the Azure Tenant. true, false. Defaults to "false"
     published          = optional(bool, true)  # If the Access Packages in this catalog are available for management. true, false. Defaults to "true"
+    create_catalog     = optional(bool, true)  # When false, look up an existing catalog by display_name instead of creating one. Use when multiple states share one catalog.
 
     access_packages = list(object({
       display_name      = string                # Name of the Access Package
