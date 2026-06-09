@@ -310,9 +310,11 @@ resource "terraform_data" "force-remove-assignments" {
         exit 1
       fi
 
-      # Step 1: delete auto-assignment policies before sweeping assignments.
-      # Without this, an active auto-assignment policy re-grants access as fast as
-      # assignments are removed, leaving the package in a state that blocks deletion.
+      # Step 1: disable auto-assignment policies before sweeping assignments.
+      # Entra blocks DELETE on a policy that has active assignments, so we PATCH to
+      # disable auto-assignment first. Without this, the policy re-grants access as
+      # fast as assignments are removed, leaving the package in a state that blocks
+      # deletion. Terraform then deletes the now-disabled policy as a resource.
       AUTO_POLICIES=$(curl --silent --fail \
         --header "Authorization: Bearer $TOKEN" \
         --get \
@@ -321,14 +323,16 @@ resource "terraform_data" "force-remove-assignments" {
         | jq --raw-output '.value[].id // empty')
 
       for POLICY_ID in $AUTO_POLICIES; do
-        echo "Deleting auto-assignment policy $POLICY_ID..."
-        curl --silent --fail --request DELETE \
+        echo "Disabling auto-assignment policy $POLICY_ID..."
+        curl --silent --fail --request PATCH \
           --header "Authorization: Bearer $TOKEN" \
-          "$GRAPH_URL/identityGovernance/entitlementManagement/assignmentPolicies/$POLICY_ID" || true
+          --header "Content-Type: application/json" \
+          --data '{"automaticRequestSettings":{"requestAccessForAllowedTargets":false}}' \
+          "$GRAPH_URL/identityGovernance/entitlementManagement/assignmentPolicies/$POLICY_ID"
       done
 
       if [ -n "$AUTO_POLICIES" ]; then
-        echo "Waiting 15s for policy deletion to propagate before sweeping assignments..."
+        echo "Waiting 15s for policy disable to propagate before sweeping assignments..."
         sleep 15
       fi
 
