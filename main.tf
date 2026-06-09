@@ -310,10 +310,38 @@ resource "terraform_data" "force-remove-assignments" {
         exit 1
       fi
 
+      # Step 1: disable auto-assignment policies before sweeping assignments.
+      # Entra blocks DELETE on a policy that has active assignments, so we PATCH to
+      # disable auto-assignment first. Without this, the policy re-grants access as
+      # fast as assignments are removed, leaving the package in a state that blocks
+      # deletion. Terraform then deletes the now-disabled policy as a resource.
+      AUTO_POLICIES=$(curl --silent --fail \
+        --header "Authorization: Bearer $TOKEN" \
+        --get \
+        --data-urlencode "$ODATA_FILTER=accessPackage/id eq '$PACKAGE_ID' and allowedTargetScope eq 'specificDirectoryUsers'" \
+        "$GRAPH_URL/identityGovernance/entitlementManagement/assignmentPolicies" \
+        | jq --raw-output '.value[].id // empty')
+
+      for POLICY_ID in $AUTO_POLICIES; do
+        echo "Disabling auto-assignment policy $POLICY_ID..."
+        curl --silent --fail --request PATCH \
+          --header "Authorization: Bearer $TOKEN" \
+          --header "Content-Type: application/json" \
+          --data '{"automaticRequestSettings":{"requestAccessForAllowedTargets":false}}' \
+          "$GRAPH_URL/identityGovernance/entitlementManagement/assignmentPolicies/$POLICY_ID"
+      done
+
+      if [ -n "$AUTO_POLICIES" ]; then
+        echo "Waiting 15s for policy disable to propagate before sweeping assignments..."
+        sleep 15
+      fi
+
+      # Step 2: remove all non-expired assignments. Using 'ne Expired/Canceled' rather
+      # than 'eq Delivered' catches Delivering and PartiallyDelivered states too.
       ASSIGNMENTS=$(curl --silent --fail \
         --header "Authorization: Bearer $TOKEN" \
         --get \
-        --data-urlencode "$ODATA_FILTER=accessPackage/id eq '$PACKAGE_ID' and state eq 'Delivered'" \
+        --data-urlencode "$ODATA_FILTER=accessPackage/id eq '$PACKAGE_ID' and state ne 'Expired' and state ne 'Canceled'" \
         "$GRAPH_URL/identityGovernance/entitlementManagement/assignments" \
         | jq --raw-output '.value[].id // empty')
 
@@ -338,7 +366,7 @@ resource "terraform_data" "force-remove-assignments" {
         REMAINING=$(curl --silent --fail \
           --header "Authorization: Bearer $TOKEN" \
           --get \
-          --data-urlencode "$ODATA_FILTER=accessPackage/id eq '$PACKAGE_ID' and state eq 'Delivered'" \
+          --data-urlencode "$ODATA_FILTER=accessPackage/id eq '$PACKAGE_ID' and state ne 'Expired' and state ne 'Canceled'" \
           "$GRAPH_URL/identityGovernance/entitlementManagement/assignments" \
           | jq '.value | length')
         if [ "$REMAINING" -eq 0 ]; then
