@@ -315,12 +315,15 @@ resource "terraform_data" "force-remove-assignments" {
       # disable auto-assignment first. Without this, the policy re-grants access as
       # fast as assignments are removed, leaving the package in a state that blocks
       # deletion. Terraform then deletes the now-disabled policy as a resource.
+      # Filter only by accessPackage/id - the Graph API entitlement management endpoints
+      # have limited OData operator support; compound filters with 'ne' or chained 'and'
+      # on non-key properties silently return empty results. Filter client-side with jq.
       AUTO_POLICIES=$(curl --silent --fail \
         --header "Authorization: Bearer $TOKEN" \
         --get \
-        --data-urlencode "$ODATA_FILTER=accessPackage/id eq '$PACKAGE_ID' and allowedTargetScope eq 'specificDirectoryUsers'" \
+        --data-urlencode "$ODATA_FILTER=accessPackage/id eq '$PACKAGE_ID'" \
         "$GRAPH_URL/identityGovernance/entitlementManagement/assignmentPolicies" \
-        | jq --raw-output '.value[].id // empty')
+        | jq --raw-output '.value[] | select(.allowedTargetScope == "specificDirectoryUsers") | .id')
 
       for POLICY_ID in $AUTO_POLICIES; do
         echo "Disabling auto-assignment policy $POLICY_ID..."
@@ -336,14 +339,15 @@ resource "terraform_data" "force-remove-assignments" {
         sleep 15
       fi
 
-      # Step 2: remove all non-expired assignments. Using 'ne Expired/Canceled' rather
-      # than 'eq Delivered' catches Delivering and PartiallyDelivered states too.
+      # Step 2: remove all non-expired assignments. Query by accessPackage/id only and
+      # filter out Expired/Canceled client-side - 'ne' on state is not supported by this
+      # endpoint and silently returns empty results.
       ASSIGNMENTS=$(curl --silent --fail \
         --header "Authorization: Bearer $TOKEN" \
         --get \
-        --data-urlencode "$ODATA_FILTER=accessPackage/id eq '$PACKAGE_ID' and state ne 'Expired' and state ne 'Canceled'" \
+        --data-urlencode "$ODATA_FILTER=accessPackage/id eq '$PACKAGE_ID'" \
         "$GRAPH_URL/identityGovernance/entitlementManagement/assignments" \
-        | jq --raw-output '.value[].id // empty')
+        | jq --raw-output '.value[] | select(.state != "Expired" and .state != "Canceled") | .id')
 
       if [ -z "$ASSIGNMENTS" ]; then
         echo "No active assignments for package $PACKAGE_ID - proceeding."
@@ -366,9 +370,9 @@ resource "terraform_data" "force-remove-assignments" {
         REMAINING=$(curl --silent --fail \
           --header "Authorization: Bearer $TOKEN" \
           --get \
-          --data-urlencode "$ODATA_FILTER=accessPackage/id eq '$PACKAGE_ID' and state ne 'Expired' and state ne 'Canceled'" \
+          --data-urlencode "$ODATA_FILTER=accessPackage/id eq '$PACKAGE_ID'" \
           "$GRAPH_URL/identityGovernance/entitlementManagement/assignments" \
-          | jq '.value | length')
+          | jq '[.value[] | select(.state != "Expired" and .state != "Canceled")] | length')
         if [ "$REMAINING" -eq 0 ]; then
           echo "All assignments removed - ready to delete package."
           exit 0
