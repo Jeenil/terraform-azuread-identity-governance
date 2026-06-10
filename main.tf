@@ -327,7 +327,7 @@ resource "terraform_data" "force-remove-assignments" {
 
       for POLICY_ID in $AUTO_POLICIES; do
         echo "Disabling auto-assignment policy $POLICY_ID..."
-        HTTP_STATUS=$(curl --silent --write-out "%{http_code}" --output /dev/null \
+        HTTP_STATUS=$(curl --silent --write-out "%%{http_code}" --output /dev/null \
           --request PATCH \
           --header "Authorization: Bearer $TOKEN" \
           --header "Content-Type: application/json" \
