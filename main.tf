@@ -315,17 +315,16 @@ resource "terraform_data" "force-remove-assignments" {
       # disable auto-assignment first. Without this, the policy re-grants access as
       # fast as assignments are removed, leaving the package in a state that blocks
       # deletion. Terraform then deletes the now-disabled policy as a resource.
-      # Filter only by accessPackage/id - the Graph API entitlement management endpoints
-      # have limited OData operator support; compound filters with 'ne' or chained 'and'
-      # on non-key properties silently return empty results. Filter client-side with jq.
-      # PATCH 404s are handled gracefully below — a stale/deleted policy ID in the list
-      # response simply means it was already removed in a prior attempt.
+      # Derive policy IDs from active assignments' assignmentPolicyId field — the
+      # assignmentPolicies filter endpoint can return stale cached IDs that 404 on PATCH.
+      # Active assignments always reference the real live policy. PATCH 404s and other
+      # 4xx responses are handled gracefully below.
       AUTO_POLICIES=$(curl --silent --fail \
         --header "Authorization: Bearer $TOKEN" \
         --get \
         --data-urlencode "$ODATA_FILTER=accessPackage/id eq '$PACKAGE_ID'" \
-        "$GRAPH_URL/identityGovernance/entitlementManagement/assignmentPolicies" \
-        | jq --raw-output '.value[] | select(.allowedTargetScope == "specificDirectoryUsers") | .id')
+        "$GRAPH_URL/identityGovernance/entitlementManagement/assignments" \
+        | jq --raw-output '[.value[] | select((.state | ascii_downcase) != "expired" and (.state | ascii_downcase) != "canceled") | .assignmentPolicyId] | unique[] // empty')
 
       for POLICY_ID in $AUTO_POLICIES; do
         echo "Disabling auto-assignment policy $POLICY_ID..."
