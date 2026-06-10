@@ -327,11 +327,17 @@ resource "terraform_data" "force-remove-assignments" {
 
       for POLICY_ID in $AUTO_POLICIES; do
         echo "Disabling auto-assignment policy $POLICY_ID..."
-        curl --silent --fail --request PATCH \
+        HTTP_STATUS=$(curl --silent --write-out "%{http_code}" --output /dev/null \
+          --request PATCH \
           --header "Authorization: Bearer $TOKEN" \
           --header "Content-Type: application/json" \
           --data '{"automaticRequestSettings":{"requestAccessForAllowedTargets":false}}' \
-          "$GRAPH_URL/identityGovernance/entitlementManagement/assignmentPolicies/$POLICY_ID"
+          "$GRAPH_URL/identityGovernance/entitlementManagement/assignmentPolicies/$POLICY_ID")
+        if [ "$HTTP_STATUS" = "404" ]; then
+          echo "  Policy $POLICY_ID not found (already deleted) - skipping"
+        elif [ "$HTTP_STATUS" -ge 400 ]; then
+          echo "  Warning: PATCH returned HTTP $HTTP_STATUS for policy $POLICY_ID - continuing"
+        fi
       done
 
       if [ -n "$AUTO_POLICIES" ]; then
