@@ -278,7 +278,7 @@ resource "null_resource" "auto-assignment-policies" {
 ###   Drain active assignments before package deletion
 ###   Required because the Graph API rejects DELETE on a package that still has Delivered assignments.
 ###   Runs as a destroy-time provisioner so it always executes before the azuread_access_package destroy.
-###   Token acquisition: tries `az` CLI first, then falls back to ARM_TENANT_ID / ARM_CLIENT_ID / ARM_CLIENT_SECRET.
+###   Token acquisition: uses ARM_TENANT_ID / ARM_CLIENT_ID / ARM_CLIENT_SECRET when set (SP application token with full permissions), falls back to `az` CLI.
 ####################################################################################################
 resource "terraform_data" "force-remove-assignments" {
   for_each = { for ap in local.access-packages : ap.key => ap }
@@ -295,18 +295,18 @@ resource "terraform_data" "force-remove-assignments" {
       ODATA_FILTER='$filter'
 
       TOKEN=""
-      if command -v az >/dev/null 2>&1; then
-        TOKEN=$(az account get-access-token --resource https://graph.microsoft.com --query accessToken --output tsv 2>/dev/null || true)
-      fi
-      if [ -z "$TOKEN" ] && [ -n "$ARM_TENANT_ID" ] && [ -n "$ARM_CLIENT_ID" ] && [ -n "$ARM_CLIENT_SECRET" ]; then
+      if [ -n "$ARM_TENANT_ID" ] && [ -n "$ARM_CLIENT_ID" ] && [ -n "$ARM_CLIENT_SECRET" ]; then
         TOKEN=$(curl --silent --fail --request POST \
           "https://login.microsoftonline.com/$ARM_TENANT_ID/oauth2/v2.0/token" \
           --header "Content-Type: application/x-www-form-urlencoded" \
           --data "client_id=$ARM_CLIENT_ID&client_secret=$ARM_CLIENT_SECRET&scope=https://graph.microsoft.com/.default&grant_type=client_credentials" \
           | jq --raw-output '.access_token')
       fi
+      if [ -z "$TOKEN" ] && command -v az >/dev/null 2>&1; then
+        TOKEN=$(az account get-access-token --resource https://graph.microsoft.com --query accessToken --output tsv 2>/dev/null || true)
+      fi
       if [ -z "$TOKEN" ]; then
-        echo "ERROR: Could not obtain a Graph API token. Run 'az login' or set ARM_TENANT_ID, ARM_CLIENT_ID, and ARM_CLIENT_SECRET."
+        echo "ERROR: Could not obtain a Graph API token. Set ARM_TENANT_ID, ARM_CLIENT_ID, and ARM_CLIENT_SECRET, or run 'az login'."
         exit 1
       fi
 
