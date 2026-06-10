@@ -318,6 +318,8 @@ resource "terraform_data" "force-remove-assignments" {
       # Filter only by accessPackage/id - the Graph API entitlement management endpoints
       # have limited OData operator support; compound filters with 'ne' or chained 'and'
       # on non-key properties silently return empty results. Filter client-side with jq.
+      # PATCH 404s are handled gracefully below — a stale/deleted policy ID in the list
+      # response simply means it was already removed in a prior attempt.
       AUTO_POLICIES=$(curl --silent --fail \
         --header "Authorization: Bearer $TOKEN" \
         --get \
@@ -347,13 +349,14 @@ resource "terraform_data" "force-remove-assignments" {
 
       # Step 2: remove all non-expired assignments. Query by accessPackage/id only and
       # filter out Expired/Canceled client-side - 'ne' on state is not supported by this
-      # endpoint and silently returns empty results.
+      # endpoint and silently returns empty results. Use ascii_downcase for case-insensitive
+      # comparison - the Graph API returns lowercase states ("delivered", "expired").
       ASSIGNMENTS=$(curl --silent --fail \
         --header "Authorization: Bearer $TOKEN" \
         --get \
         --data-urlencode "$ODATA_FILTER=accessPackage/id eq '$PACKAGE_ID'" \
         "$GRAPH_URL/identityGovernance/entitlementManagement/assignments" \
-        | jq --raw-output '.value[] | select(.state != "Expired" and .state != "Canceled") | .id')
+        | jq --raw-output '.value[] | select((.state | ascii_downcase) != "expired" and (.state | ascii_downcase) != "canceled") | .id')
 
       if [ -z "$ASSIGNMENTS" ]; then
         echo "No active assignments for package $PACKAGE_ID - proceeding."
@@ -363,11 +366,15 @@ resource "terraform_data" "force-remove-assignments" {
       echo "Submitting AdminRemove requests for package $PACKAGE_ID..."
       for ASSIGNMENT_ID in $ASSIGNMENTS; do
         echo "  Removing assignment $ASSIGNMENT_ID"
-        curl --silent --fail --request POST \
+        HTTP_STATUS=$(curl --silent --write-out "%%{http_code}" --output /dev/null \
+          --request POST \
           --header "Authorization: Bearer $TOKEN" \
           --header "Content-Type: application/json" \
           --data "{\"requestType\":\"AdminRemove\",\"assignment\":{\"id\":\"$ASSIGNMENT_ID\"}}" \
-          "$GRAPH_URL/identityGovernance/entitlementManagement/assignmentRequests" >/dev/null
+          "$GRAPH_URL/identityGovernance/entitlementManagement/assignmentRequests")
+        if [ "$HTTP_STATUS" -ge 400 ]; then
+          echo "  Warning: AdminRemove returned HTTP $HTTP_STATUS for assignment $ASSIGNMENT_ID - skipping"
+        fi
       done
 
       echo "Waiting for assignments to be removed (up to 5 min)..."
@@ -378,7 +385,7 @@ resource "terraform_data" "force-remove-assignments" {
           --get \
           --data-urlencode "$ODATA_FILTER=accessPackage/id eq '$PACKAGE_ID'" \
           "$GRAPH_URL/identityGovernance/entitlementManagement/assignments" \
-          | jq '[.value[] | select(.state != "Expired" and .state != "Canceled")] | length')
+          | jq '[.value[] | select((.state | ascii_downcase) != "expired" and (.state | ascii_downcase) != "canceled")] | length')
         if [ "$REMAINING" -eq 0 ]; then
           echo "All assignments removed - ready to delete package."
           exit 0
