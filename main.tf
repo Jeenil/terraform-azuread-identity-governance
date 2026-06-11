@@ -332,7 +332,7 @@ resource "terraform_data" "force-remove-assignments" {
           --request PATCH \
           --header "Authorization: Bearer $TOKEN" \
           --header "Content-Type: application/json" \
-          --data '{"automaticRequestSettings":{"requestAccessForAllowedTargets":false}}' \
+          --data '{"automaticRequestSettings":{"requestAccessForAllowedTargets":false},"accessPackageNotificationSettings":{"@odata.type":"#microsoft.graph.accessPackageNotificationSettings","isAssignmentNotificationDisabled":true}}' \
           "$GRAPH_URL/identityGovernance/entitlementManagement/assignmentPolicies/$POLICY_ID")
         if [ "$HTTP_STATUS" = "404" ]; then
           echo "  Policy $POLICY_ID not found (already deleted) - skipping"
