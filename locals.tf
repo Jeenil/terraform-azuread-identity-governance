@@ -26,13 +26,13 @@ locals {
       [for g in pair.pkg.group_resources : {
         display_name           = g
         resource_origin_system = "AadGroup"
-        resource_origin_id     = data.azuread_group.resources[g].object_id
+        resource_origin_id     = data.azuread_group.groups[g].object_id
         access_type            = pair.pkg.access_type
       }],
       [for t in pair.pkg.teams_resources : {
         display_name           = t
         resource_origin_system = "AadGroup"
-        resource_origin_id     = data.azuread_group.resources[t].object_id
+        resource_origin_id     = data.azuread_group.teams[t].object_id
         access_type            = pair.pkg.access_type
       }],
       [for s in pair.pkg.sharepoint_resources : {
