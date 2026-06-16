@@ -17,16 +17,21 @@ data "azuread_group" "groups" {
 }
 
 # Resolves Teams team display names to their backing M365 group object IDs.
-# Filters to mail-enabled, non-security groups to avoid ambiguity when a security
-# group shares the same display name as the Teams-backed M365 group.
-data "azuread_group" "teams" {
+# Filters by Unified group type AND resourceProvisioningOptions containing 'Team' to
+# uniquely target Teams-backed groups even when other groups share the same display name.
+data "msgraph_resource" "teams_groups" {
   for_each = toset(flatten([
     for catalog in var.entitlement_catalogs : [
       for package in catalog.access_packages : package.teams_resources
     ]
   ]))
 
-  display_name     = each.value
-  mail_enabled     = true
-  security_enabled = false
+  url = "/groups"
+  query_parameters = {
+    "$filter" = ["displayName eq '${each.value}' and groupTypes/any(c:c eq 'Unified') and resourceProvisioningOptions/any(x:x eq 'Team')"]
+    "$select" = ["id,displayName"]
+  }
+  response_export_values = {
+    id = "value[0].id"
+  }
 }

@@ -32,7 +32,7 @@ locals {
       [for t in pair.pkg.teams_resources : {
         display_name           = t
         resource_origin_system = "AadGroup"
-        resource_origin_id     = data.azuread_group.teams[t].object_id
+        resource_origin_id     = data.msgraph_resource.teams_groups[t].output.id
         access_type            = pair.pkg.access_type
       }],
       [for s in pair.pkg.sharepoint_resources : {
