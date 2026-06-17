@@ -439,11 +439,53 @@ resource "null_resource" "catalog-associations" {
         --data-urlencode "scope=https://graph.microsoft.com/.default" \
         | jq -r '.access_token')
 
-      count=$(curl -sf \
-        -H "Authorization: Bearer $token" \
-        -G "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/catalogs/${self.triggers.catalog_id}/resources" \
+      graph_get() {
+        local url="$1"
+        local attempt=0
+        local delay=15
+        while [ $attempt -lt 5 ]; do
+          local body
+          local code
+          code=$(curl -s -o /tmp/graph_resp -w "%%{http_code}" \
+            -H "Authorization: Bearer $token" \
+            -G "$url" "$${@:2}")
+          body=$(cat /tmp/graph_resp)
+          if [ "$code" = "429" ]; then
+            attempt=$((attempt + 1))
+            echo "[!] Rate limited (429), retry $attempt/5 in $${delay}s..."
+            sleep $delay
+            delay=$((delay * 2))
+          else
+            echo "$body"
+            return 0
+          fi
+        done
+        echo "Error: Graph API still rate limiting after 5 retries"
+        return 1
+      }
+
+      poll_available() {
+        for i in $(seq 1 36); do
+          sleep 10
+          available=$(graph_get \
+            "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/catalogs/${self.triggers.catalog_id}/resources" \
+            --data-urlencode "\$filter=originId eq '${self.triggers.origin_id}'" \
+            | jq '.value | length' 2>/dev/null || echo "0")
+          if [ "$${available:-0}" -gt 0 ]; then
+            echo "[+] Resource available in catalog after $((i * 10))s"
+            return 0
+          fi
+          if [ "$i" -eq 36 ]; then
+            echo "Error: resource still not in available state after 360s"
+            return 1
+          fi
+        done
+      }
+
+      count=$(graph_get \
+        "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/catalogs/${self.triggers.catalog_id}/resources" \
         --data-urlencode "\$filter=originId eq '${self.triggers.origin_id}'" \
-        | jq '.value | length')
+        | jq '.value | length' 2>/dev/null || echo "0")
 
       if [ "$count" -eq 0 ]; then
         body=$(jq -n \
@@ -451,36 +493,31 @@ resource "null_resource" "catalog-associations" {
           --arg osys "${self.triggers.origin_system}" \
           --arg cid "${self.triggers.catalog_id}" \
           '{"requestType":"AdminAdd","justification":"","resource":{"originId":$oid,"originSystem":$osys},"catalog":{"id":$cid}}')
-        HTTP_STATUS=$(curl -s -o /dev/null -w "%%{http_code}" -X POST \
-          -H "Authorization: Bearer $token" \
-          -H "Content-Type: application/json" \
-          "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/resourceRequests" \
-          -d "$body")
+        HTTP_STATUS="429"
+        post_attempt=0
+        post_delay=15
+        while [ "$HTTP_STATUS" = "429" ] && [ $post_attempt -lt 5 ]; do
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%%{http_code}" -X POST \
+            -H "Authorization: Bearer $token" \
+            -H "Content-Type: application/json" \
+            "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/resourceRequests" \
+            -d "$body")
+          if [ "$HTTP_STATUS" = "429" ]; then
+            post_attempt=$((post_attempt + 1))
+            echo "[!] POST rate limited (429), retry $post_attempt/5 in $${post_delay}s..."
+            sleep $post_delay
+            post_delay=$((post_delay * 2))
+          fi
+        done
         if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
           echo "[+] Associated: ${self.triggers.origin_id} - waiting for catalog propagation..."
-          for i in $(seq 1 18); do
-            sleep 10
-            available=$(curl -sf \
-              -H "Authorization: Bearer $token" \
-              -G "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/catalogs/${self.triggers.catalog_id}/resources" \
-              --data-urlencode "\$filter=originId eq '${self.triggers.origin_id}'" \
-              | jq '[.value[] | select(.state == "available")] | length')
-            if [ "$available" -gt 0 ]; then
-              echo "[+] Resource available in catalog after $((i * 10))s"
-              break
-            fi
-            if [ "$i" -eq 18 ]; then
-              echo "Error: resource still not in available state after 180s"
-              exit 1
-            fi
-          done
+          poll_available
         else
-          recheck=$(curl -sf \
-            -H "Authorization: Bearer $token" \
-            -G "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/catalogs/${self.triggers.catalog_id}/resources" \
+          recheck=$(graph_get \
+            "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/catalogs/${self.triggers.catalog_id}/resources" \
             --data-urlencode "\$filter=originId eq '${self.triggers.origin_id}'" \
-            | jq '.value | length')
-          if [ "$recheck" -gt 0 ]; then
+            | jq '.value | length' 2>/dev/null || echo "0")
+          if [ "$${recheck:-0}" -gt 0 ]; then
             echo "[=] Already in catalog: ${self.triggers.origin_id}"
           else
             echo "Error: POST returned HTTP $HTTP_STATUS and resource still not in catalog"
@@ -496,38 +533,19 @@ resource "null_resource" "catalog-associations" {
   depends_on = [azuread_access_package_catalog.entitlement-catalogs]
 }
 
-data "msgraph_resource" "catalog_resources" {
-  for_each = { for resource in local.resource-catalog-associations-filtered : resource.catalog_resource_association_key => resource }
-  url      = "/identityGovernance/entitlementManagement/catalogs/${local.catalog_ids[each.value.catalog_key]}/resources"
-  query_parameters = {
-    "$filter" = ["(originId eq '${each.value.resource_origin_id}')"]
-    "$expand" = ["scopes"]
-  }
-  response_export_values = {
-    all = "@"
-    id  = "value[0].id"
-  }
-
-  depends_on = [
-    azuread_access_package_catalog.entitlement-catalogs,
-    null_resource.catalog-associations
-  ]
-}
-
 ###   Identity Governance - Resource Access Package Associations
 ###################################################################
 resource "azuread_access_package_resource_package_association" "resource-access-package-associations" {
   for_each = { for resource in local.resources : resource.access_package_resource_association_key => resource if resource.resource_origin_system != "AadApplication" && resource.resource_origin_system != "SharePointOnline" }
 
-  catalog_resource_association_id = "${local.catalog_ids[each.value.catalog_key]}/${coalesce(data.msgraph_resource.catalog_resources[each.value.catalog_resource_association_key].output.id, each.value.resource_origin_id)}"
+  catalog_resource_association_id = "${local.catalog_ids[each.value.catalog_key]}/${each.value.resource_origin_id}"
   access_package_id               = azuread_access_package.access-packages[each.value.access_package_key].id
   access_type                     = each.value.access_type
 
   depends_on = [
     azuread_access_package_catalog.entitlement-catalogs,
     azuread_access_package.access-packages,
-    null_resource.catalog-associations,
-    data.msgraph_resource.catalog_resources
+    null_resource.catalog-associations
   ]
 }
 
@@ -599,11 +617,35 @@ resource "null_resource" "sharepoint-catalog-associations" {
         --data-urlencode "scope=https://graph.microsoft.com/.default" \
         | jq -r '.access_token')
 
-      count=$(curl -sf \
-        -H "Authorization: Bearer $token" \
-        -G "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/catalogs/${self.triggers.catalog_id}/resources" \
+      graph_get() {
+        local url="$1"
+        local attempt=0
+        local delay=15
+        while [ $attempt -lt 5 ]; do
+          local body
+          local code
+          code=$(curl -s -o /tmp/graph_resp -w "%%{http_code}" \
+            -H "Authorization: Bearer $token" \
+            -G "$url" "$${@:2}")
+          body=$(cat /tmp/graph_resp)
+          if [ "$code" = "429" ]; then
+            attempt=$((attempt + 1))
+            echo "[!] Rate limited (429), retry $attempt/5 in $${delay}s..."
+            sleep $delay
+            delay=$((delay * 2))
+          else
+            echo "$body"
+            return 0
+          fi
+        done
+        echo "Error: Graph API still rate limiting after 5 retries"
+        return 1
+      }
+
+      count=$(graph_get \
+        "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/catalogs/${self.triggers.catalog_id}/resources" \
         --data-urlencode "\$filter=originId eq '${self.triggers.origin_id}'" \
-        | jq '.value | length')
+        | jq '.value | length' 2>/dev/null || echo "0")
 
       if [ "$count" -eq 0 ]; then
         body=$(jq -n \
@@ -618,12 +660,11 @@ resource "null_resource" "sharepoint-catalog-associations" {
         if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
           echo "[+] Onboarded: ${self.triggers.origin_id}"
         else
-          recheck=$(curl -sf \
-            -H "Authorization: Bearer $token" \
-            -G "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/catalogs/${self.triggers.catalog_id}/resources" \
+          recheck=$(graph_get \
+            "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/catalogs/${self.triggers.catalog_id}/resources" \
             --data-urlencode "\$filter=originId eq '${self.triggers.origin_id}'" \
-            | jq '.value | length')
-          if [ "$recheck" -gt 0 ]; then
+            | jq '.value | length' 2>/dev/null || echo "0")
+          if [ "$${recheck:-0}" -gt 0 ]; then
             echo "[=] Already in catalog: ${self.triggers.origin_id}"
           else
             echo "Error: POST returned HTTP $HTTP_STATUS and resource still not in catalog"
