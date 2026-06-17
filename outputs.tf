@@ -17,7 +17,7 @@ output "assignment_policies" {
 
 output "resource_catalog_associations" {
   description = "Outputs all Resources associated with the Entitlement Catalogs"
-  value       = azuread_access_package_resource_catalog_association.resource-catalog-associations[*]
+  value       = null_resource.catalog-associations[*]
 }
 
 output "resource_access_package_associations" {
