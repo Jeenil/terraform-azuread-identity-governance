@@ -402,6 +402,15 @@ resource "terraform_data" "force-remove-assignments" {
   ]
 }
 
+###   Migrate existing azuread_access_package_resource_catalog_association state to
+###   null_resource.catalog-associations without destroying the Azure resources.
+removed {
+  from = azuread_access_package_resource_catalog_association.resource-catalog-associations
+  lifecycle {
+    destroy = false
+  }
+}
+
 ###   Identity Governance - Resource Catalog Associations (AadGroup/AadApplication)
 ###   Uses null_resource + local-exec to idempotently onboard AadGroup/AadApplication
 ###   resources to the catalog. Checks via Graph API before POSTing - skips if already
@@ -448,7 +457,23 @@ resource "null_resource" "catalog-associations" {
           "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/resourceRequests" \
           -d "$body")
         if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
-          echo "[+] Associated: ${self.triggers.origin_id}"
+          echo "[+] Associated: ${self.triggers.origin_id} - waiting for catalog propagation..."
+          for i in $(seq 1 18); do
+            sleep 10
+            available=$(curl -sf \
+              -H "Authorization: Bearer $token" \
+              -G "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/catalogs/${self.triggers.catalog_id}/resources" \
+              --data-urlencode "\$filter=originId eq '${self.triggers.origin_id}'" \
+              | jq '[.value[] | select(.state == "available")] | length')
+            if [ "$available" -gt 0 ]; then
+              echo "[+] Resource available in catalog after $((i * 10))s"
+              break
+            fi
+            if [ "$i" -eq 18 ]; then
+              echo "Error: resource still not in available state after 180s"
+              exit 1
+            fi
+          done
         else
           recheck=$(curl -sf \
             -H "Authorization: Bearer $token" \
@@ -494,7 +519,7 @@ data "msgraph_resource" "catalog_resources" {
 resource "azuread_access_package_resource_package_association" "resource-access-package-associations" {
   for_each = { for resource in local.resources : resource.access_package_resource_association_key => resource if resource.resource_origin_system != "AadApplication" && resource.resource_origin_system != "SharePointOnline" }
 
-  catalog_resource_association_id = "${local.catalog_ids[each.value.catalog_key]}/${data.msgraph_resource.catalog_resources[each.value.catalog_resource_association_key].output.id}"
+  catalog_resource_association_id = "${local.catalog_ids[each.value.catalog_key]}/${coalesce(data.msgraph_resource.catalog_resources[each.value.catalog_resource_association_key].output.id, each.value.resource_origin_id)}"
   access_package_id               = azuread_access_package.access-packages[each.value.access_package_key].id
   access_type                     = each.value.access_type
 
