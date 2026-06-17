@@ -1,4 +1,3 @@
-
 resource "msgraph_resource" "connected_organizations" {
   for_each = { for org in var.connected_organizations : org.display_name => org }
   url      = "/identityGovernance/entitlementManagement/connectedOrganizations"
@@ -32,7 +31,6 @@ resource "azuread_access_package_catalog" "entitlement-catalogs" {
   published          = try(each.value.published, null)
 }
 
-
 ###   Identity Governance - Access Packages
 ##############################################
 resource "azuread_access_package" "access-packages" {
@@ -45,7 +43,7 @@ resource "azuread_access_package" "access-packages" {
 
   depends_on = [
     azuread_access_package_catalog.entitlement-catalogs,
-    azuread_access_package_resource_catalog_association.resource-catalog-associations
+    null_resource.catalog-associations
   ]
 }
 
@@ -165,7 +163,7 @@ resource "azuread_access_package_assignment_policy" "assignment_policies" {
   depends_on = [
     azuread_access_package_catalog.entitlement-catalogs,
     azuread_access_package.access-packages,
-    azuread_access_package_resource_catalog_association.resource-catalog-associations,
+    null_resource.catalog-associations,
     azuread_access_package_resource_package_association.resource-access-package-associations
   ]
 }
@@ -269,7 +267,7 @@ resource "null_resource" "auto-assignment-policies" {
   depends_on = [
     azuread_access_package_catalog.entitlement-catalogs,
     azuread_access_package.access-packages,
-    azuread_access_package_resource_catalog_association.resource-catalog-associations,
+    null_resource.catalog-associations,
     azuread_access_package_resource_package_association.resource-access-package-associations
   ]
 }
@@ -404,17 +402,90 @@ resource "terraform_data" "force-remove-assignments" {
   ]
 }
 
-###   Identity Governance - Resource Catalog Associations
-############################################################
-resource "azuread_access_package_resource_catalog_association" "resource-catalog-associations" {
+###   Identity Governance - Resource Catalog Associations (AadGroup/AadApplication)
+###   Uses null_resource + local-exec to idempotently onboard AadGroup/AadApplication
+###   resources to the catalog. Checks via Graph API before POSTing - skips if already
+###   onboarded. Mirrors the SharePoint pattern to handle resources that exist in Azure
+###   but not in Terraform state without erroring.
+###################################################################
+resource "null_resource" "catalog-associations" {
   for_each = { for resource in local.resource-catalog-associations-filtered : resource.catalog_resource_association_key => resource }
 
-  catalog_id             = local.catalog_ids[each.value.catalog_key]
-  resource_origin_id     = each.value.resource_origin_id
-  resource_origin_system = each.value.resource_origin_system
+  triggers = {
+    catalog_id    = local.catalog_ids[each.value.catalog_key]
+    origin_id     = each.value.resource_origin_id
+    origin_system = each.value.resource_origin_system
+  }
+
+  provisioner "local-exec" {
+    interpreter = ["/bin/bash", "-c"]
+    command     = <<-EOT
+      set -euo pipefail
+
+      token=$(curl -sf -X POST \
+        "https://login.microsoftonline.com/$ARM_TENANT_ID/oauth2/v2.0/token" \
+        --data-urlencode "grant_type=client_credentials" \
+        --data-urlencode "client_id=$ARM_CLIENT_ID" \
+        --data-urlencode "client_secret=$ARM_CLIENT_SECRET" \
+        --data-urlencode "scope=https://graph.microsoft.com/.default" \
+        | jq -r '.access_token')
+
+      count=$(curl -sf \
+        -H "Authorization: Bearer $token" \
+        -G "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/catalogs/${self.triggers.catalog_id}/resources" \
+        --data-urlencode "\$filter=originId eq '${self.triggers.origin_id}'" \
+        | jq '.value | length')
+
+      if [ "$count" -eq 0 ]; then
+        body=$(jq -n \
+          --arg oid "${self.triggers.origin_id}" \
+          --arg osys "${self.triggers.origin_system}" \
+          --arg cid "${self.triggers.catalog_id}" \
+          '{"requestType":"AdminAdd","justification":"","resource":{"originId":$oid,"originSystem":$osys},"catalog":{"id":$cid}}')
+        HTTP_STATUS=$(curl -s -o /dev/null -w "%%{http_code}" -X POST \
+          -H "Authorization: Bearer $token" \
+          -H "Content-Type: application/json" \
+          "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/resourceRequests" \
+          -d "$body")
+        if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
+          echo "[+] Associated: ${self.triggers.origin_id}"
+        else
+          recheck=$(curl -sf \
+            -H "Authorization: Bearer $token" \
+            -G "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/catalogs/${self.triggers.catalog_id}/resources" \
+            --data-urlencode "\$filter=originId eq '${self.triggers.origin_id}'" \
+            | jq '.value | length')
+          if [ "$recheck" -gt 0 ]; then
+            echo "[=] Already in catalog: ${self.triggers.origin_id}"
+          else
+            echo "Error: POST returned HTTP $HTTP_STATUS and resource still not in catalog"
+            exit 1
+          fi
+        fi
+      else
+        echo "[=] Already in catalog: ${self.triggers.origin_id}"
+      fi
+    EOT
+  }
+
+  depends_on = [azuread_access_package_catalog.entitlement-catalogs]
+}
+
+data "msgraph_resource" "catalog_resources" {
+  for_each = { for resource in local.resource-catalog-associations-filtered : resource.catalog_resource_association_key => resource }
+  url      = "/identityGovernance/entitlementManagement/catalogs/${local.catalog_ids[each.value.catalog_key]}/resources"
+  query_parameters = {
+    "$filter" = ["(originId eq '${each.value.resource_origin_id}')"]
+    "$expand" = ["scopes"]
+  }
+  response_export_values = {
+    all = "@"
+    id  = "value[0].id"
+  }
 
   depends_on = [
-    azuread_access_package_catalog.entitlement-catalogs
+    azuread_access_package_catalog.entitlement-catalogs,
+    null_resource.catalog-associations
   ]
 }
 
@@ -423,14 +494,15 @@ resource "azuread_access_package_resource_catalog_association" "resource-catalog
 resource "azuread_access_package_resource_package_association" "resource-access-package-associations" {
   for_each = { for resource in local.resources : resource.access_package_resource_association_key => resource if resource.resource_origin_system != "AadApplication" && resource.resource_origin_system != "SharePointOnline" }
 
-  catalog_resource_association_id = azuread_access_package_resource_catalog_association.resource-catalog-associations[each.value.catalog_resource_association_key].id
+  catalog_resource_association_id = "${local.catalog_ids[each.value.catalog_key]}/${data.msgraph_resource.catalog_resources[each.value.catalog_resource_association_key].output.id}"
   access_package_id               = azuread_access_package.access-packages[each.value.access_package_key].id
   access_type                     = each.value.access_type
 
   depends_on = [
     azuread_access_package_catalog.entitlement-catalogs,
     azuread_access_package.access-packages,
-    azuread_access_package_resource_catalog_association.resource-catalog-associations
+    null_resource.catalog-associations,
+    data.msgraph_resource.catalog_resources
   ]
 }
 
@@ -450,7 +522,7 @@ data "msgraph_resource" "resource_access_package_catalog_resources" {
   depends_on = [
     azuread_access_package_catalog.entitlement-catalogs,
     azuread_access_package.access-packages,
-    azuread_access_package_resource_catalog_association.resource-catalog-associations
+    null_resource.catalog-associations
   ]
 }
 
@@ -471,7 +543,7 @@ data "msgraph_resource" "resource_access_package_catalog_resource_roles" {
   depends_on = [
     azuread_access_package_catalog.entitlement-catalogs,
     azuread_access_package.access-packages,
-    azuread_access_package_resource_catalog_association.resource-catalog-associations
+    null_resource.catalog-associations
   ]
 }
 
@@ -513,12 +585,26 @@ resource "null_resource" "sharepoint-catalog-associations" {
           --arg oid "${self.triggers.origin_id}" \
           --arg cid "${self.triggers.catalog_id}" \
           '{"requestType":"AdminAdd","justification":"","resource":{"originId":$oid,"originSystem":"SharePointOnline"},"catalog":{"id":$cid}}')
-        curl -sf -X POST \
+        HTTP_STATUS=$(curl -s -o /dev/null -w "%%{http_code}" -X POST \
           -H "Authorization: Bearer $token" \
           -H "Content-Type: application/json" \
           "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/resourceRequests" \
-          -d "$body" > /dev/null
-        echo "[+] Onboarded: ${self.triggers.origin_id}"
+          -d "$body")
+        if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
+          echo "[+] Onboarded: ${self.triggers.origin_id}"
+        else
+          recheck=$(curl -sf \
+            -H "Authorization: Bearer $token" \
+            -G "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/catalogs/${self.triggers.catalog_id}/resources" \
+            --data-urlencode "\$filter=originId eq '${self.triggers.origin_id}'" \
+            | jq '.value | length')
+          if [ "$recheck" -gt 0 ]; then
+            echo "[=] Already in catalog: ${self.triggers.origin_id}"
+          else
+            echo "Error: POST returned HTTP $HTTP_STATUS and resource still not in catalog"
+            exit 1
+          fi
+        fi
       else
         echo "[=] Already in catalog: ${self.triggers.origin_id}"
       fi
@@ -631,6 +717,6 @@ resource "msgraph_resource_action" "resource-access-package-associations" {
   depends_on = [
     azuread_access_package_catalog.entitlement-catalogs,
     azuread_access_package.access-packages,
-    azuread_access_package_resource_catalog_association.resource-catalog-associations
+    null_resource.catalog-associations
   ]
 }
