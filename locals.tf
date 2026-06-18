@@ -135,6 +135,12 @@ locals {
     if resource.resource_origin_system == "SharePointOnline"
   ]
 
+  _dynamic_teams_groups = {
+    for name, group in data.msgraph_resource.teams_groups :
+    name => tostring(group.output.membership_rule)
+    if tostring(group.output.membership_rule_processing_state) == "On"
+  }
+
   # Pick the correct SP permission group role for each access package association.
   # Filters the full role list returned by the data source by matching the display name
   # suffix — "Owners" for owner packages, "Members" for member packages.
