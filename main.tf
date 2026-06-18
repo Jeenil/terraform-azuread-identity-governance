@@ -658,8 +658,7 @@ resource "null_resource" "sharepoint-catalog-associations" {
 
       count=$(graph_get \
         "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/catalogs/${self.triggers.catalog_id}/resources" \
-        --data-urlencode "\$filter=originId eq '${self.triggers.origin_id}'" \
-        | jq '.value | length' 2>/dev/null || echo "0")
+        | jq --arg oid "${self.triggers.origin_id}" '[.value[] | select(.originId == $oid)] | length' 2>/dev/null || echo "0")
 
       if [ "$count" -eq 0 ]; then
         body=$(jq -n \
@@ -676,8 +675,7 @@ resource "null_resource" "sharepoint-catalog-associations" {
         else
           recheck=$(graph_get \
             "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/catalogs/${self.triggers.catalog_id}/resources" \
-            --data-urlencode "\$filter=originId eq '${self.triggers.origin_id}'" \
-            | jq '.value | length' 2>/dev/null || echo "0")
+            | jq --arg oid "${self.triggers.origin_id}" '[.value[] | select(.originId == $oid)] | length' 2>/dev/null || echo "0")
           if [ "$${recheck:-0}" -gt 0 ]; then
             echo "[=] Already in catalog: ${self.triggers.origin_id}"
           else
