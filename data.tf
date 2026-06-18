@@ -29,9 +29,11 @@ data "msgraph_resource" "teams_groups" {
   url = "/groups"
   query_parameters = {
     "$filter" = ["displayName eq '${each.value}' and groupTypes/any(c:c eq 'Unified') and resourceProvisioningOptions/any(x:x eq 'Team')"]
-    "$select" = ["id,displayName"]
+    "$select" = ["id,displayName,membershipRule,membershipRuleProcessingState"]
   }
   response_export_values = {
-    id = "value[0].id"
+    id                               = "value[0].id"
+    membership_rule                  = "value[0].membershipRule"
+    membership_rule_processing_state = "value[0].membershipRuleProcessingState"
   }
 }

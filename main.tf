@@ -411,6 +411,20 @@ removed {
   }
 }
 
+###   Validation - Teams groups used as resources must have Static membership.
+###   Dynamic groups do not expose an Owner role in the entitlement catalog.
+###   Remove the group from teams_resources and use auto_assignment_policy with
+###   the group's dynamic membership rule as the filter instead.
+###################################################################
+resource "terraform_data" "validate_teams_not_dynamic" {
+  lifecycle {
+    precondition {
+      condition     = length(local._dynamic_teams_groups) == 0
+      error_message = "Teams groups with Dynamic membership cannot be used as access package resources — dynamic groups do not expose an Owner role in the entitlement catalog. Remove each group from teams_resources and use auto_assignment_policy with its dynamic rule as the filter instead:\n${join("\n", [for name, rule in local._dynamic_teams_groups : "  '${name}': ${rule}"])}"
+    }
+  }
+}
+
 ###   Identity Governance - Resource Catalog Associations (AadGroup/AadApplication)
 ###   Uses null_resource + local-exec to idempotently onboard AadGroup/AadApplication
 ###   resources to the catalog. Checks via Graph API before POSTing - skips if already
