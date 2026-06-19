@@ -141,15 +141,24 @@ locals {
     if tostring(group.output.membership_rule_processing_state) == "On"
   }
 
-  # Pick the correct SP permission group role for each access package association.
-  # Filters the full role list returned by the data source by matching the display name
-  # suffix — "Owners" for owner packages, "Members" for member packages.
-  # This avoids hardcoding originId values and works regardless of role list ordering.
-  _sp_selected_role = {
+  # Intermediate: filtered role list per SharePoint resource key before the [0] guard below.
+  _sp_filtered_roles = {
     for key, resource in { for r in local.resources : r.access_package_resource_association_key => r if r.resource_origin_system == "SharePointOnline" } :
     key => [
       for role in data.msgraph_resource.sharepoint_catalog_resource_roles[key].output.all.value :
       role if endswith(lower(tostring(role["displayName"])), resource.access_type == "Owner" ? " owners" : " members")
-    ][0]
+    ]
+  }
+
+  # Pick the correct SP permission group role for each access package association.
+  # Filters the full role list returned by the data source by matching the display name
+  # suffix — "Owners" for owner packages, "Members" for member packages.
+  # This avoids hardcoding originId values and works regardless of role list ordering.
+  # Fails with a readable message when no matching role exists (e.g. role-name drift or wrong access_type).
+  _sp_selected_role = {
+    for key, resource in { for r in local.resources : r.access_package_resource_association_key => r if r.resource_origin_system == "SharePointOnline" } :
+    key => length(local._sp_filtered_roles[key]) > 0 ? local._sp_filtered_roles[key][0] : tobool(
+      "No SharePoint role ending with '${resource.access_type == "Owner" ? " owners" : " members"}' found for access package '${key}'. Check access_type and that the site's permission groups exist."
+    )
   }
 }
