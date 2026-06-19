@@ -216,9 +216,10 @@ resource "null_resource" "auto-assignment-policies" {
         --data-urlencode "scope=https://graph.microsoft.com/.default" \
         | jq -r '.access_token')
 
-      count=$(curl -sf \
-        -H "Authorization: Bearer $token" \
-        -G "$GRAPH_URL/identityGovernance/entitlementManagement/assignmentPolicies" \
+      source "${path.module}/scripts/graph_get.sh"
+
+      count=$(graph_get \
+        "$GRAPH_URL/identityGovernance/entitlementManagement/assignmentPolicies" \
         --data-urlencode "\$filter=accessPackage/id eq '$PACKAGE_ID' and allowedTargetScope eq 'specificDirectoryUsers'" \
         | jq '.value | length')
 
@@ -255,12 +256,28 @@ resource "null_resource" "auto-assignment-policies" {
           accessPackage: {id: $package_id}
         }')
 
-      curl -sf -X POST \
-        -H "Authorization: Bearer $token" \
-        -H "Content-Type: application/json" \
-        "$GRAPH_URL/identityGovernance/entitlementManagement/assignmentPolicies" \
-        -d "$body" > /dev/null
-      echo "[+] Created auto-assignment policy for package $PACKAGE_ID"
+      HTTP_STATUS="429"
+      post_attempt=0
+      post_delay=15
+      while [ "$HTTP_STATUS" = "429" ] && [ $post_attempt -lt 5 ]; do
+        HTTP_STATUS=$(curl -s -o /dev/null -w "%%{http_code}" -X POST \
+          -H "Authorization: Bearer $token" \
+          -H "Content-Type: application/json" \
+          "$GRAPH_URL/identityGovernance/entitlementManagement/assignmentPolicies" \
+          -d "$body")
+        if [ "$HTTP_STATUS" = "429" ]; then
+          post_attempt=$((post_attempt + 1))
+          echo "[!] POST rate limited (429), retry $post_attempt/5 in $${post_delay}s..."
+          sleep $post_delay
+          post_delay=$((post_delay * 2))
+        fi
+      done
+      if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
+        echo "[+] Created auto-assignment policy for package $PACKAGE_ID"
+      else
+        echo "[!] POST assignmentPolicies returned HTTP $HTTP_STATUS for package $PACKAGE_ID" >&2
+        exit 1
+      fi
     EOT
   }
 
@@ -453,30 +470,7 @@ resource "null_resource" "catalog-associations" {
         --data-urlencode "scope=https://graph.microsoft.com/.default" \
         | jq -r '.access_token')
 
-      graph_get() {
-        local url="$1"
-        local attempt=0
-        local delay=15
-        while [ $attempt -lt 5 ]; do
-          local body
-          local code
-          code=$(curl -s -o /tmp/graph_resp -w "%%{http_code}" \
-            -H "Authorization: Bearer $token" \
-            -G "$url" "$${@:2}")
-          body=$(cat /tmp/graph_resp)
-          if [ "$code" = "429" ]; then
-            attempt=$((attempt + 1))
-            echo "[!] Rate limited (429), retry $attempt/5 in $${delay}s..."
-            sleep $delay
-            delay=$((delay * 2))
-          else
-            echo "$body"
-            return 0
-          fi
-        done
-        echo "Error: Graph API still rate limiting after 5 retries"
-        return 1
-      }
+      source "${path.module}/scripts/graph_get.sh"
 
       poll_available() {
         for i in $(seq 1 36); do
@@ -484,7 +478,7 @@ resource "null_resource" "catalog-associations" {
           available=$(graph_get \
             "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/catalogs/${self.triggers.catalog_id}/resources" \
             --data-urlencode "\$filter=originId eq '${self.triggers.origin_id}'" \
-            | jq '.value | length' 2>/dev/null || echo "0")
+            | jq '.value | length')
           if [ "$${available:-0}" -gt 0 ]; then
             echo "[+] Resource available in catalog after $((i * 10))s"
             return 0
@@ -499,7 +493,7 @@ resource "null_resource" "catalog-associations" {
       count=$(graph_get \
         "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/catalogs/${self.triggers.catalog_id}/resources" \
         --data-urlencode "\$filter=originId eq '${self.triggers.origin_id}'" \
-        | jq '.value | length' 2>/dev/null || echo "0")
+        | jq '.value | length')
 
       if [ "$count" -eq 0 ]; then
         body=$(jq -n \
@@ -530,11 +524,11 @@ resource "null_resource" "catalog-associations" {
           recheck=$(graph_get \
             "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/catalogs/${self.triggers.catalog_id}/resources" \
             --data-urlencode "\$filter=originId eq '${self.triggers.origin_id}'" \
-            | jq '.value | length' 2>/dev/null || echo "0")
+            | jq '.value | length')
           if [ "$${recheck:-0}" -gt 0 ]; then
             echo "[=] Already in catalog: ${self.triggers.origin_id}"
           else
-            echo "Error: POST returned HTTP $HTTP_STATUS and resource still not in catalog"
+            echo "[!] POST returned HTTP $HTTP_STATUS and resource still not in catalog" >&2
             exit 1
           fi
         fi
@@ -631,55 +625,43 @@ resource "null_resource" "sharepoint-catalog-associations" {
         --data-urlencode "scope=https://graph.microsoft.com/.default" \
         | jq -r '.access_token')
 
-      graph_get() {
-        local url="$1"
-        local attempt=0
-        local delay=15
-        while [ $attempt -lt 5 ]; do
-          local body
-          local code
-          code=$(curl -s -o /tmp/graph_resp -w "%%{http_code}" \
-            -H "Authorization: Bearer $token" \
-            -G "$url" "$${@:2}")
-          body=$(cat /tmp/graph_resp)
-          if [ "$code" = "429" ]; then
-            attempt=$((attempt + 1))
-            echo "[!] Rate limited (429), retry $attempt/5 in $${delay}s..."
-            sleep $delay
-            delay=$((delay * 2))
-          else
-            echo "$body"
-            return 0
-          fi
-        done
-        echo "Error: Graph API still rate limiting after 5 retries"
-        return 1
-      }
+      source "${path.module}/scripts/graph_get.sh"
 
       count=$(graph_get \
         "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/catalogs/${self.triggers.catalog_id}/resources" \
-        | jq --arg oid "${self.triggers.origin_id}" '[.value[] | select(.originId == $oid)] | length' 2>/dev/null || echo "0")
+        | jq --arg oid "${self.triggers.origin_id}" '[.value[] | select(.originId == $oid)] | length')
 
       if [ "$count" -eq 0 ]; then
         body=$(jq -n \
           --arg oid "${self.triggers.origin_id}" \
           --arg cid "${self.triggers.catalog_id}" \
           '{"requestType":"AdminAdd","justification":"","resource":{"originId":$oid,"originSystem":"SharePointOnline"},"catalog":{"id":$cid}}')
-        HTTP_STATUS=$(curl -s -o /dev/null -w "%%{http_code}" -X POST \
-          -H "Authorization: Bearer $token" \
-          -H "Content-Type: application/json" \
-          "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/resourceRequests" \
-          -d "$body")
+        HTTP_STATUS="429"
+        post_attempt=0
+        post_delay=15
+        while [ "$HTTP_STATUS" = "429" ] && [ $post_attempt -lt 5 ]; do
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%%{http_code}" -X POST \
+            -H "Authorization: Bearer $token" \
+            -H "Content-Type: application/json" \
+            "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/resourceRequests" \
+            -d "$body")
+          if [ "$HTTP_STATUS" = "429" ]; then
+            post_attempt=$((post_attempt + 1))
+            echo "[!] POST rate limited (429), retry $post_attempt/5 in $${post_delay}s..."
+            sleep $post_delay
+            post_delay=$((post_delay * 2))
+          fi
+        done
         if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
           echo "[+] Onboarded: ${self.triggers.origin_id}"
         else
           recheck=$(graph_get \
             "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/catalogs/${self.triggers.catalog_id}/resources" \
-            | jq --arg oid "${self.triggers.origin_id}" '[.value[] | select(.originId == $oid)] | length' 2>/dev/null || echo "0")
+            | jq --arg oid "${self.triggers.origin_id}" '[.value[] | select(.originId == $oid)] | length')
           if [ "$${recheck:-0}" -gt 0 ]; then
             echo "[=] Already in catalog: ${self.triggers.origin_id}"
           else
-            echo "Error: POST returned HTTP $HTTP_STATUS and resource still not in catalog"
+            echo "[!] POST returned HTTP $HTTP_STATUS and resource still not in catalog" >&2
             exit 1
           fi
         fi
