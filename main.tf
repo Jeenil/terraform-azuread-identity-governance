@@ -170,115 +170,57 @@ resource "azuread_access_package_assignment_policy" "assignment_policies" {
 
 ###   Identity Governance - Auto-Assignment Policies
 ###   Created only when auto_assignment_policy is defined on an access package.
-###   These are separate from request-based policies - Entra ID automatically
-###   grants access to users matching the OData filter without requiring a request.
-###   Uses null_resource + local-exec (like SharePoint catalog associations) because:
-###     1. The azuread provider does not yet support automaticRequestSettings
-###        (https://github.com/hashicorp/terraform-provider-azuread/issues/1449)
-###     2. msgraph_resource POSTs unconditionally re-applying when the policy already
-###        exists in Azure (but not in state) would error or create a duplicate. This
-###        pattern checks via Graph API before creating, making it safe to apply repeatedly.
+###   These are separate from request-based policies — Entra ID automatically grants
+###   access to users matching the OData filter without requiring a request.
+###
+###   Managed via msgraph_resource (not null_resource) so the policy is true desired
+###   state: create = POST, update = PUT (full replacement — the only update verb
+###   assignmentPolicies support, see accesspackageassignmentpolicy-update), delete =
+###   DELETE, all tracked in Terraform state and visible at plan time. The azuread
+###   provider still lacks automaticRequestSettings support
+###   (https://github.com/hashicorp/terraform-provider-azuread/issues/1449), which is why
+###   we manage this resource directly against Microsoft Graph.
+###
+###   MIGRATION NOTE: a package whose policy was previously created by the old
+###   null_resource path exists in Entra but not in this resource's state. Import it
+###   before the first apply, otherwise the create POST makes a duplicate:
+###     terraform import '<module path>.msgraph_resource.auto-assignment-policies["<key>"]' \
+###       /identityGovernance/entitlementManagement/assignmentPolicies/<policyId>
 ####################################################################################################
-resource "null_resource" "auto-assignment-policies" {
+resource "msgraph_resource" "auto-assignment-policies" {
   for_each = { for ap in local.access-packages : ap.key => ap if ap.auto_assignment_policy != null }
 
-  triggers = {
-    access_package_id           = azuread_access_package.access-packages[each.key].id
-    display_name                = each.value.display_name
-    description                 = each.value.description
-    filter                      = each.value.auto_assignment_policy.filter
-    remove_when_target_leaves   = tostring(each.value.auto_assignment_policy.remove_when_target_leaves)
-    grace_period_before_removal = each.value.auto_assignment_policy.grace_period_before_removal
+  url           = "/identityGovernance/entitlementManagement/assignmentPolicies"
+  api_version   = "v1.0"
+  update_method = "PUT"
+
+  body = {
+    displayName        = "${each.value.display_name}-auto-assignment-policy"
+    description        = each.value.description
+    allowedTargetScope = "specificDirectoryUsers"
+    specificAllowedTargets = [{
+      "@odata.type"  = "#microsoft.graph.attributeRuleMembers"
+      description    = "Attribute rule for auto-assignment"
+      membershipRule = each.value.auto_assignment_policy.filter
+    }]
+    automaticRequestSettings = {
+      requestAccessForAllowedTargets             = true
+      removeAccessWhenTargetLeavesAllowedTargets = each.value.auto_assignment_policy.remove_when_target_leaves
+      gracePeriodBeforeAccessRemoval             = each.value.auto_assignment_policy.grace_period_before_removal
+    }
+    accessPackage = {
+      id = azuread_access_package.access-packages[each.key].id
+    }
   }
 
-  provisioner "local-exec" {
-    interpreter = ["/bin/bash", "-c"]
-    # Values are passed as env vars rather than interpolated into the script body so
-    # that OData filter strings (which contain double quotes) don't break the shell.
-    environment = {
-      PACKAGE_ID         = self.triggers.access_package_id
-      DISPLAY_NAME       = self.triggers.display_name
-      DESCRIPTION        = self.triggers.description
-      FILTER             = self.triggers.filter
-      REMOVE_WHEN_LEAVES = self.triggers.remove_when_target_leaves
-      GRACE_PERIOD       = self.triggers.grace_period_before_removal
-    }
-    command = <<-EOT
-      set -euo pipefail
+  # Graph echoes back server-managed fields (createdDateTime, etc.) and defaults for the
+  # request-based settings that don't apply to an auto-assignment policy. Suppress diffs for
+  # properties we don't set so they don't surface as perpetual drift.
+  ignore_missing_property = true
 
-      GRAPH_URL="https://graph.microsoft.com/v1.0"
-
-      token=$(curl -sf -X POST \
-        "https://login.microsoftonline.com/$ARM_TENANT_ID/oauth2/v2.0/token" \
-        --data-urlencode "grant_type=client_credentials" \
-        --data-urlencode "client_id=$ARM_CLIENT_ID" \
-        --data-urlencode "client_secret=$ARM_CLIENT_SECRET" \
-        --data-urlencode "scope=https://graph.microsoft.com/.default" \
-        | jq -r '.access_token')
-
-      source "${path.module}/scripts/graph_get.sh"
-
-      count=$(graph_get \
-        "$GRAPH_URL/identityGovernance/entitlementManagement/assignmentPolicies" \
-        --data-urlencode "\$filter=accessPackage/id eq '$PACKAGE_ID' and allowedTargetScope eq 'specificDirectoryUsers'" \
-        | jq '.value | length')
-
-      if [ "$count" -gt 0 ]; then
-        echo "[=] Auto-assignment policy already exists for package $PACKAGE_ID - skipping"
-        exit 0
-      fi
-
-      body=$(jq -n \
-        --arg package_id "$PACKAGE_ID" \
-        --arg display_name "$DISPLAY_NAME-auto-assignment-policy" \
-        --arg description "$DESCRIPTION" \
-        --arg filter "$FILTER" \
-        --arg remove_when_leaves "$REMOVE_WHEN_LEAVES" \
-        --arg grace_period "$GRACE_PERIOD" \
-        '{
-          displayName: $display_name,
-          description: $description,
-          allowedTargetScope: "specificDirectoryUsers",
-          specificAllowedTargets: [{
-            "@odata.type": "#microsoft.graph.attributeRuleMembers",
-            description: "Attribute rule for auto-assignment",
-            membershipRule: $filter
-          }],
-          automaticRequestSettings: {
-            requestAccessForAllowedTargets: true,
-            removeAccessWhenTargetLeavesAllowedTargets: ($remove_when_leaves == "true"),
-            gracePeriodBeforeAccessRemoval: $grace_period
-          },
-          accessPackageNotificationSettings: {
-            "@odata.type": "#microsoft.graph.accessPackageNotificationSettings",
-            isAssignmentNotificationDisabled: true
-          },
-          accessPackage: {id: $package_id}
-        }')
-
-      HTTP_STATUS="429"
-      post_attempt=0
-      post_delay=15
-      while [ "$HTTP_STATUS" = "429" ] && [ $post_attempt -lt 5 ]; do
-        HTTP_STATUS=$(curl -s -o /dev/null -w "%%{http_code}" -X POST \
-          -H "Authorization: Bearer $token" \
-          -H "Content-Type: application/json" \
-          "$GRAPH_URL/identityGovernance/entitlementManagement/assignmentPolicies" \
-          -d "$body")
-        if [ "$HTTP_STATUS" = "429" ]; then
-          post_attempt=$((post_attempt + 1))
-          echo "[!] POST rate limited (429), retry $post_attempt/5 in $${post_delay}s..."
-          sleep $post_delay
-          post_delay=$((post_delay * 2))
-        fi
-      done
-      if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
-        echo "[+] Created auto-assignment policy for package $PACKAGE_ID"
-      else
-        echo "[!] POST assignmentPolicies returned HTTP $HTTP_STATUS for package $PACKAGE_ID" >&2
-        exit 1
-      fi
-    EOT
+  response_export_values = {
+    id              = "id"
+    membership_rule = "specificAllowedTargets[0].membershipRule"
   }
 
   depends_on = [
@@ -414,7 +356,7 @@ resource "terraform_data" "force-remove-assignments" {
 
   depends_on = [
     azuread_access_package.access-packages,
-    null_resource.auto-assignment-policies,
+    msgraph_resource.auto-assignment-policies,
     azuread_access_package_assignment_policy.assignment_policies,
   ]
 }

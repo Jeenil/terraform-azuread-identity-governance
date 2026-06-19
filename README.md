@@ -242,10 +242,10 @@ provider version is bumped - once it is, the parallelism override can be removed
 | [azuread_access_package_assignment_policy.assignment_policies](https://registry.terraform.io/providers/hashicorp/azuread/latest/docs/resources/access_package_assignment_policy) | resource |
 | [azuread_access_package_catalog.entitlement-catalogs](https://registry.terraform.io/providers/hashicorp/azuread/latest/docs/resources/access_package_catalog) | resource |
 | [azuread_access_package_resource_package_association.resource-access-package-associations](https://registry.terraform.io/providers/hashicorp/azuread/latest/docs/resources/access_package_resource_package_association) | resource |
+| [msgraph_resource.auto-assignment-policies](https://registry.terraform.io/providers/microsoft/msgraph/latest/docs/resources/resource) | resource |
 | [msgraph_resource.connected_organizations](https://registry.terraform.io/providers/microsoft/msgraph/latest/docs/resources/resource) | resource |
 | [msgraph_resource_action.resource-access-package-associations](https://registry.terraform.io/providers/microsoft/msgraph/latest/docs/resources/resource_action) | resource |
 | [msgraph_resource_action.sharepoint-access-package-associations](https://registry.terraform.io/providers/microsoft/msgraph/latest/docs/resources/resource_action) | resource |
-| [null_resource.auto-assignment-policies](https://registry.terraform.io/providers/hashicorp/null/latest/docs/resources/resource) | resource |
 | [null_resource.catalog-associations](https://registry.terraform.io/providers/hashicorp/null/latest/docs/resources/resource) | resource |
 | [null_resource.sharepoint-catalog-associations](https://registry.terraform.io/providers/hashicorp/null/latest/docs/resources/resource) | resource |
 | [terraform_data.force-remove-assignments](https://registry.terraform.io/providers/hashicorp/terraform/latest/docs/resources/data) | resource |
