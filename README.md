@@ -264,6 +264,8 @@ provider version is bumped - once it is, the parallelism override can be removed
 |------|-------------|
 | <a name="output_access_packages"></a> [access\_packages](#output\_access\_packages) | Outputs all Access Packages created through this module |
 | <a name="output_assignment_policies"></a> [assignment\_policies](#output\_assignment\_policies) | Outputs all Access Package Assignment Policies created through this module |
+| <a name="output_auto_assignment_policies"></a> [auto\_assignment\_policies](#output\_auto\_assignment\_policies) | Auto-assignment policies managed through this module, keyed by "<catalog>-<package>". Exposes the live policy id and membership rule (resolved OData filter) for downstream modules and CI assertions. |
+| <a name="output_catalog_ids"></a> [catalog\_ids](#output\_catalog\_ids) | Resolved Entra catalog IDs keyed by catalog display name, whether the catalog was created by this module or looked up. |
 | <a name="output_entitlement_catalogs"></a> [entitlement\_catalogs](#output\_entitlement\_catalogs) | Outputs all Entitlement Catalogs created through this module |
 | <a name="output_resource_access_package_associations"></a> [resource\_access\_package\_associations](#output\_resource\_access\_package\_associations) | Outputs all Resources associated with the Access Packages |
 | <a name="output_resource_catalog_associations"></a> [resource\_catalog\_associations](#output\_resource\_catalog\_associations) | Outputs all Resources associated with the Entitlement Catalogs |
