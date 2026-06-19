@@ -141,15 +141,29 @@ locals {
     if tostring(group.output.membership_rule_processing_state) == "On"
   }
 
+  # Intermediate: filtered role list per SharePoint resource key before the [0] guard below.
+  # Without this split, an empty match (e.g. access_type drift or missing permission group)
+  # would panic with a cryptic index-out-of-range instead of a readable message.
+  # Example: if access_type = "Owner" but the site has no "AccountManagers Owners" group,
+  # the guard fires: "No SharePoint role ending with ' owners' found for access package
+  # 'onboarding-access-package-department-X'. Check access_type and that the site's
+  # permission groups exist."
+  _sp_filtered_roles = {
+    for key, resource in { for r in local.resources : r.access_package_resource_association_key => r if r.resource_origin_system == "SharePointOnline" } :
+    key => [
+      for role in data.msgraph_resource.sharepoint_catalog_resource_roles[key].output.all.value :
+      role if endswith(lower(tostring(role["displayName"])), resource.access_type == "Owner" ? " owners" : " members")
+    ]
+  }
+
   # Pick the correct SP permission group role for each access package association.
   # Filters the full role list returned by the data source by matching the display name
   # suffix — "Owners" for owner packages, "Members" for member packages.
   # This avoids hardcoding originId values and works regardless of role list ordering.
   _sp_selected_role = {
     for key, resource in { for r in local.resources : r.access_package_resource_association_key => r if r.resource_origin_system == "SharePointOnline" } :
-    key => [
-      for role in data.msgraph_resource.sharepoint_catalog_resource_roles[key].output.all.value :
-      role if endswith(lower(tostring(role["displayName"])), resource.access_type == "Owner" ? " owners" : " members")
-    ][0]
+    key => length(local._sp_filtered_roles[key]) > 0 ? local._sp_filtered_roles[key][0] : tobool(
+      "No SharePoint role ending with '${resource.access_type == "Owner" ? " owners" : " members"}' found for access package '${key}'. Check access_type and that the site's permission groups exist."
+    )
   }
 }
