@@ -654,36 +654,24 @@ data "msgraph_resource" "sharepoint_catalog_resource_roles" {
 }
 
 ###   Identity Governance - Resource Access Package Associations for SharePointOnline
-###   due to https://github.com/hashicorp/terraform-provider-azuread/issues/1637
+###   TESTING ONLY (branch test/native-sp-association): uses the native
+###   azuread_access_package_resource_package_association, which requires the patched
+###   azuread provider that accepts a SharePoint role URL as access_type (PR based on
+###   hashicorp/terraform-provider-azuread#1782). Run via a dev_override. Do NOT merge
+###   until that provider change ships. Original msgraph_resource_action version is on
+###   `main` — `git checkout main -- main.tf` to restore.
 ###################################################################
-resource "msgraph_resource_action" "sharepoint-access-package-associations" {
-  for_each     = { for resource in local.resources : resource.access_package_resource_association_key => resource if resource.resource_origin_system == "SharePointOnline" }
-  resource_url = "/identityGovernance/entitlementManagement/accessPackages/${azuread_access_package.access-packages[each.value.access_package_key].id}/resourceRoleScopes"
-  method       = "POST"
+resource "azuread_access_package_resource_package_association" "sharepoint-access-package-associations" {
+  for_each = { for resource in local.resources : resource.access_package_resource_association_key => resource if resource.resource_origin_system == "SharePointOnline" }
 
-  body = {
-    role = {
-      displayName  = tostring(local._sp_selected_role[each.key]["displayName"])
-      originSystem = "SharePointOnline"
-      originId     = tostring(local._sp_selected_role[each.key]["originId"])
-      resource = {
-        id = data.msgraph_resource.sharepoint_catalog_resources[each.key].output.id
-      }
-    }
-    scope = {
-      displayName  = "Root"
-      description  = "Root Scope"
-      originId     = each.value.resource_origin_id
-      originSystem = "SharePointOnline"
-      isRootScope  = true
-    }
-  }
+  catalog_resource_association_id = "${local.catalog_ids[each.value.catalog_key]}/${each.value.resource_origin_id}"
+  access_package_id               = azuread_access_package.access-packages[each.value.access_package_key].id
+  access_type                     = tostring(local._sp_selected_role[each.key]["originId"]) # the SharePoint role URL
 
   depends_on = [
     azuread_access_package_catalog.entitlement-catalogs,
     azuread_access_package.access-packages,
     null_resource.sharepoint-catalog-associations,
-    data.msgraph_resource.sharepoint_catalog_resources,
     data.msgraph_resource.sharepoint_catalog_resource_roles
   ]
 }
