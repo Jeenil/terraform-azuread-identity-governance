@@ -9,12 +9,22 @@ and structured OData filter assembly for auto-assignment policies.
 
 - **Display name resolution** - pass Entra group and Teams team display names directly; the module resolves them to object IDs via data source
 - **Per-package `access_type`** - set a role once at the package level and it fans out to all resources in that package. `"Member"` or `"Owner"` for `AadGroup` and `SharePointOnline` resources (resolved to the site Members/Owners permission group automatically), a role UUID for `AadApplication` resources
+- **Native resource-package associations for all origin systems** - `AadGroup`, `AadApplication` (app role), and `SharePointOnline` (site role) are all attached to access packages with the first-class `azuread_access_package_resource_package_association` resource. The previous `msgraph_resource_action` workarounds for app roles and SharePoint are gone (see the provider requirement below)
 - **SharePoint resources** - pass site path suffixes (`"BrandDesigns"`) with a `sharepoint_base_url` instead of constructing full origin IDs manually
 - **Idempotent SharePoint catalog onboarding** - catalog-level associations are handled via `null_resource` + `local-exec` that checks via Graph API before POSTing; avoids `ResourceAlreadyOnboarded` errors on subsequent applies
 - **Idempotent auto-assignment policies** - same check-before-create pattern; avoids duplicate policy errors or stale state issues if the policy already exists in Azure
 - **Structured OData filters** - use `dept_code`, `dept_name`, `exclude_title_prefixes`, and `include_title_prefixes` to build auto-assignment filters without writing raw OData
 - **Raw filter escape hatch** - set `filter` directly for any custom OData expression; structured fields are ignored when this is set
 - **Raw resource escape hatch** - pass `resources` directly with object IDs when display name resolution is not needed
+
+> **⚠️ Provider requirement (temporary).** The native `AadApplication` (app role) and
+> `SharePointOnline` package associations depend on a change to the `azuread` provider that
+> is not yet in a registry release:
+> [hashicorp/terraform-provider-azuread#1880](https://github.com/hashicorp/terraform-provider-azuread/pull/1880).
+> Until that ships, point `azuread` at a locally built patched binary with a `dev_override`
+> (see the TEMP-wiring notes maintained alongside the provider fork). `AadGroup`-only
+> configurations work with the stock provider. This notice will be removed once the fix is
+> released and the `version` constraint is bumped.
 
 ## Usage
 
@@ -117,6 +127,35 @@ resources = [
     access_type            = "Member"
   }
 ]
+```
+
+### Application (app role) resources
+
+Enterprise application app roles are attached via the `resources` escape hatch. There is no
+display-name shortcut for apps. `resource_origin_id` is the service principal (enterprise app)
+**object id** and `access_type` is an **app role id (UUID)** exposed by that application. Full
+example: [`examples/application-roles`](examples/application-roles).
+
+```hcl
+resources = [
+  {
+    resource_origin_system = "AadApplication"
+    resource_origin_id     = "00000000-0000-0000-0000-000000000000" # service principal object id
+    access_type            = "11111111-1111-1111-1111-111111111111" # app role id (UUID)
+  }
+]
+```
+
+### SharePoint resources
+
+Pass site path suffixes plus a `sharepoint_base_url`; `access_type` selects the site Members
+(`"Member"`) or Owners (`"Owner"`) permission group. Full example:
+[`examples/sharepoint`](examples/sharepoint).
+
+```hcl
+access_type          = "Member"
+sharepoint_resources = ["BrandDesigns", "BrandAssets"]
+sharepoint_base_url  = "https://contoso.sharepoint.com/sites"
 ```
 
 ## OData filter assembly

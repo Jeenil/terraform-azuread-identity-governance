@@ -164,7 +164,8 @@ resource "azuread_access_package_assignment_policy" "assignment_policies" {
     azuread_access_package_catalog.entitlement-catalogs,
     azuread_access_package.access-packages,
     null_resource.catalog-associations,
-    azuread_access_package_resource_package_association.resource-access-package-associations
+    azuread_access_package_resource_package_association.resource-access-package-associations,
+    azuread_access_package_resource_package_association.application-access-package-associations
   ]
 }
 
@@ -227,7 +228,8 @@ resource "msgraph_resource" "auto-assignment-policies" {
     azuread_access_package_catalog.entitlement-catalogs,
     azuread_access_package.access-packages,
     null_resource.catalog-associations,
-    azuread_access_package_resource_package_association.resource-access-package-associations
+    azuread_access_package_resource_package_association.resource-access-package-associations,
+    azuread_access_package_resource_package_association.application-access-package-associations
   ]
 }
 
@@ -499,47 +501,6 @@ resource "azuread_access_package_resource_package_association" "resource-access-
   ]
 }
 
-data "msgraph_resource" "resource_access_package_catalog_resources" {
-  for_each = { for resource in local.resources : resource.access_package_resource_association_key => resource if resource.resource_origin_system == "AadApplication" }
-  url      = "/identityGovernance/entitlementManagement/catalogs/${local.catalog_ids[each.value.catalog_key]}/resources"
-  query_parameters = {
-    "$filter" = ["(originId eq '${each.value.resource_origin_id}')"]
-    "$expand" = ["scopes"]
-  }
-  response_export_values = {
-    all      = "@"
-    id       = "value[0].id"
-    scope_id = "value[0].scopes[0].id"
-  }
-
-  depends_on = [
-    azuread_access_package_catalog.entitlement-catalogs,
-    azuread_access_package.access-packages,
-    null_resource.catalog-associations
-  ]
-}
-
-data "msgraph_resource" "resource_access_package_catalog_resource_roles" {
-  for_each = { for resource in local.resources : resource.access_package_resource_association_key => resource if resource.resource_origin_system == "AadApplication" }
-  url      = "/identityGovernance/entitlementManagement/catalogs/${local.catalog_ids[each.value.catalog_key]}/resourceRoles"
-  query_parameters = {
-    "$filter" = ["(originSystem eq 'AadApplication' and resource/id eq '${data.msgraph_resource.resource_access_package_catalog_resources[each.key].output.id}')"]
-    "$expand" = ["resource"]
-  }
-  response_export_values = {
-    all          = "@"
-    originid     = "value[0].originId"
-    display_name = "value[0].displayName"
-    description  = "value[0].description"
-  }
-
-  depends_on = [
-    azuread_access_package_catalog.entitlement-catalogs,
-    azuread_access_package.access-packages,
-    null_resource.catalog-associations
-  ]
-}
-
 ###   Identity Governance - Resource Catalog Associations for SharePointOnline
 ###   Uses null_resource + local-exec to idempotently onboard SP resources to the catalog.
 ###   Checks via Graph API before POSTing - skips if already onboarded.
@@ -676,33 +637,20 @@ resource "azuread_access_package_resource_package_association" "sharepoint-acces
   ]
 }
 
-###   Identity Governance - Resource Access Package Associations for AadApplication due to https://github.com/hashicorp/terraform-provider-azuread/issues/1066
+###   Identity Governance - Resource Access Package Associations for AadApplication
+###   TESTING ONLY (branch test/native-sp-association): uses the native
+###   azuread_access_package_resource_package_association, which requires the patched
+###   azuread provider that accepts an app-role originId as access_type (PR
+###   hashicorp/terraform-provider-azuread#1880). Run via a dev_override. Do NOT merge
+###   until that provider change ships. Replaces the former msgraph_resource_action
+###   workaround for https://github.com/hashicorp/terraform-provider-azuread/issues/1066.
 ###################################################################
-resource "msgraph_resource_action" "resource-access-package-associations" {
-  for_each     = { for resource in local.resources : resource.access_package_resource_association_key => resource if resource.resource_origin_system == "AadApplication" }
-  resource_url = "/identityGovernance/entitlementManagement/accessPackages/${azuread_access_package.access-packages[each.value.access_package_key].id}/resourceRoleScopes"
-  method       = "POST"
+resource "azuread_access_package_resource_package_association" "application-access-package-associations" {
+  for_each = { for resource in local.resources : resource.access_package_resource_association_key => resource if resource.resource_origin_system == "AadApplication" }
 
-  body = {
-    role = {
-      id           = each.value.access_type
-      displayName  = data.msgraph_resource.resource_access_package_catalog_resource_roles[each.key].output.display_name
-      description  = data.msgraph_resource.resource_access_package_catalog_resource_roles[each.key].output.description
-      originSystem = each.value.resource_origin_system
-      originId     = data.msgraph_resource.resource_access_package_catalog_resource_roles[each.key].output.originid
-      resource = {
-        id           = data.msgraph_resource.resource_access_package_catalog_resources[each.key].output.id
-        originId     = each.value.resource_origin_id
-        originSystem = each.value.resource_origin_system
-      }
-    }
-    scope = {
-      id           = data.msgraph_resource.resource_access_package_catalog_resources[each.key].output.scope_id
-      originId     = each.value.resource_origin_id
-      originSystem = each.value.resource_origin_system
-      isRootScope  = true
-    }
-  }
+  catalog_resource_association_id = "${local.catalog_ids[each.value.catalog_key]}/${each.value.resource_origin_id}"
+  access_package_id               = azuread_access_package.access-packages[each.value.access_package_key].id
+  access_type                     = each.value.access_type # the app-role originId
 
   depends_on = [
     azuread_access_package_catalog.entitlement-catalogs,
