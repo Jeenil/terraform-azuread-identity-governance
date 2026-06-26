@@ -30,8 +30,13 @@ output "auto_assignment_policies" {
   value = {
     for key, policy in msgraph_resource.auto-assignment-policies :
     key => {
-      id              = policy.output.id
-      membership_rule = policy.output.membership_rule
+      # try() keeps this output null-safe at plan/import time: a freshly imported
+      # (or not-yet-applied) policy has an empty `output` object, so a bare
+      # policy.output.id errors with "object has no attributes" and breaks
+      # `terraform import`. apply populates output via response_export_values,
+      # so real values resolve after the first apply.
+      id              = try(policy.output.id, null)
+      membership_rule = try(policy.output.membership_rule, null)
     }
   }
 }
