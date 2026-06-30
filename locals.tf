@@ -3,17 +3,63 @@
 locals {
 
   # Flat map of all access packages keyed by "catalog-package".
-  # Used as the base for resource resolution and filter assembly below.
+  # Owner packages (is_owner_package = true) are excluded when the catalog sets
+  # create_owners_package = false, so all downstream locals and resources automatically
+  # skip them without extra guards.
   _packages_flat = {
     for pair in flatten([
       for catalog in var.entitlement_catalogs : [
         for pkg in catalog.access_packages : {
-          key     = "${catalog.display_name}-${pkg.display_name}"
-          catalog = catalog.display_name
-          pkg     = pkg
+          key                               = "${catalog.display_name}-${pkg.display_name}"
+          catalog                           = catalog.display_name
+          pkg                               = pkg
+          catalog_dept_code                 = catalog.dept_code
+          catalog_dept_name                 = catalog.dept_name
+          catalog_management_title_prefixes = catalog.management_title_prefixes
+          catalog_create_owners_package     = catalog.create_owners_package
         }
       ]
     ]) : pair.key => pair
+    if !(pair.pkg.auto_assignment_policy != null && pair.pkg.auto_assignment_policy.is_owner_package && !pair.catalog_create_owners_package)
+  }
+
+  # Pre-compute effective OData filter values per package, merging catalog-level defaults
+  # with package-level overrides and is_owner_package logic. Used only in _resolved_filter.
+  #
+  # Resolution order for dept values:  package-level > catalog-level > null
+  # Resolution order for title prefixes:
+  #   - Explicit package-level exclude/include lists always win.
+  #   - Otherwise, catalog management_title_prefixes are applied:
+  #       is_owner_package = false → exclude them  (member pattern: all dept minus leadership)
+  #       is_owner_package = true  → include them  (owner pattern: leadership only)
+  _packages_enriched = {
+    for key, pair in local._packages_flat :
+    key => merge(pair, {
+      effective_dept_code = (
+        pair.pkg.auto_assignment_policy != null && pair.pkg.auto_assignment_policy.dept_code != null
+        ? pair.pkg.auto_assignment_policy.dept_code
+        : pair.catalog_dept_code
+      )
+      effective_dept_name = (
+        pair.pkg.auto_assignment_policy != null && pair.pkg.auto_assignment_policy.dept_name != null
+        ? pair.pkg.auto_assignment_policy.dept_name
+        : pair.catalog_dept_name
+      )
+      # Effective exclude list: package explicit > catalog prefixes for member packages
+      effective_title_excludes = (
+        pair.pkg.auto_assignment_policy == null ? [] :
+        length(pair.pkg.auto_assignment_policy.exclude_title_prefixes) > 0
+        ? pair.pkg.auto_assignment_policy.exclude_title_prefixes
+        : (!pair.pkg.auto_assignment_policy.is_owner_package ? pair.catalog_management_title_prefixes : [])
+      )
+      # Effective include list: package explicit > catalog prefixes for owner packages
+      effective_title_includes = (
+        pair.pkg.auto_assignment_policy == null ? [] :
+        length(pair.pkg.auto_assignment_policy.include_title_prefixes) > 0
+        ? pair.pkg.auto_assignment_policy.include_title_prefixes
+        : (pair.pkg.auto_assignment_policy.is_owner_package ? pair.catalog_management_title_prefixes : [])
+      )
+    })
   }
 
   # ── Resource list resolution ────────────────────────────────────────────────
@@ -46,38 +92,38 @@ locals {
 
   # ── OData filter assembly ───────────────────────────────────────────────────
   # If raw filter is set, pass it through unchanged — structured fields are ignored.
-  # Otherwise build the filter from dept_code, dept_name, exclude_title_prefixes,
-  # and include_title_prefixes. Null when auto_assignment_policy is not set.
+  # Otherwise build the filter from effective dept/title values resolved in _packages_enriched.
+  # Null when auto_assignment_policy is not set on the package.
   _resolved_filter = {
-    for key, pair in local._packages_flat :
+    for key, pair in local._packages_enriched :
     key => pair.pkg.auto_assignment_policy == null ? null : (
       pair.pkg.auto_assignment_policy.filter != null
       ? pair.pkg.auto_assignment_policy.filter
       : join(" and ", compact([
 
-        # dept match — dept_code and dept_name OR'd together, wrapped in parens
+        # dept match — effective_dept_code and effective_dept_name OR'd together, wrapped in parens
         length(compact([
-          pair.pkg.auto_assignment_policy.dept_code != null ? "(user.extensionAttribute1 -eq \"${pair.pkg.auto_assignment_policy.dept_code}\")" : "",
-          pair.pkg.auto_assignment_policy.dept_name != null ? "(user.department -eq \"${pair.pkg.auto_assignment_policy.dept_name}\")" : "",
+          pair.effective_dept_code != null ? "(user.extensionAttribute1 -eq \"${pair.effective_dept_code}\")" : "",
+          pair.effective_dept_name != null ? "(user.department -eq \"${pair.effective_dept_name}\")" : "",
         ])) > 0
         ? "(${join(" or ", compact([
-          pair.pkg.auto_assignment_policy.dept_code != null ? "(user.extensionAttribute1 -eq \"${pair.pkg.auto_assignment_policy.dept_code}\")" : "",
-          pair.pkg.auto_assignment_policy.dept_name != null ? "(user.department -eq \"${pair.pkg.auto_assignment_policy.dept_name}\")" : "",
+          pair.effective_dept_code != null ? "(user.extensionAttribute1 -eq \"${pair.effective_dept_code}\")" : "",
+          pair.effective_dept_name != null ? "(user.department -eq \"${pair.effective_dept_name}\")" : "",
         ]))})"
         : null,
 
-        # exclude_title_prefixes — AND'd NOT conditions (member package pattern)
-        length(pair.pkg.auto_assignment_policy.exclude_title_prefixes) > 0
+        # Member pattern: exclude management/leadership titles
+        length(pair.effective_title_excludes) > 0
         ? join(" and ", [
-          for prefix in pair.pkg.auto_assignment_policy.exclude_title_prefixes :
+          for prefix in pair.effective_title_excludes :
           "(not (user.jobTitle -startsWith \"${prefix}\"))"
         ])
         : null,
 
-        # include_title_prefixes — OR'd together, wrapped in parens (owner package pattern)
-        length(pair.pkg.auto_assignment_policy.include_title_prefixes) > 0
+        # Owner pattern: include only management/leadership titles
+        length(pair.effective_title_includes) > 0
         ? "(${join(" or ", [
-          for prefix in pair.pkg.auto_assignment_policy.include_title_prefixes :
+          for prefix in pair.effective_title_includes :
           "(user.jobTitle -startsWith \"${prefix}\")"
         ])})"
         : null,
@@ -109,6 +155,7 @@ locals {
           filter = local._resolved_filter["${catalog.display_name}-${ap.display_name}"]
         })
       })
+      if contains(keys(local._packages_flat), "${catalog.display_name}-${ap.display_name}")
     ]
   ])
 
@@ -138,6 +185,7 @@ locals {
           catalog_resource_association_key        = "${catalog.display_name}-${resource.display_name != null ? resource.display_name : "${resource.resource_origin_system}-${resource.resource_origin_id}-${resource.access_type}"}"
         })
       ]
+      if contains(keys(local._packages_flat), "${catalog.display_name}-${ap.display_name}")
     ]
   ])
 

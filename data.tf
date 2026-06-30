@@ -22,6 +22,7 @@ data "azuread_group" "groups" {
   for_each = toset(flatten([
     for catalog in var.entitlement_catalogs : [
       for package in catalog.access_packages : package.group_resources
+      if contains(keys(local._packages_flat), "${catalog.display_name}-${package.display_name}")
     ]
   ]))
 
@@ -35,6 +36,7 @@ data "msgraph_resource" "teams_groups" {
   for_each = toset(flatten([
     for catalog in var.entitlement_catalogs : [
       for package in catalog.access_packages : package.teams_resources
+      if contains(keys(local._packages_flat), "${catalog.display_name}-${package.display_name}")
     ]
   ]))
 

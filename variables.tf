@@ -23,6 +23,14 @@ variable "entitlement_catalogs" {
     published          = optional(bool, true)  # If the Access Packages in this catalog are available for management. true, false. Defaults to "true"
     create_catalog     = optional(bool, true)  # When false, look up an existing catalog by display_name instead of creating one. Use when multiple states share one catalog.
 
+    # ── Catalog-level auto-assignment defaults ───────────────────────────────
+    # Set once here; every package in this catalog inherits them.
+    # Package-level values (inside auto_assignment_policy) always take precedence.
+    dept_code                 = optional(string)           # Default extensionAttribute1 value for OData filter (e.g. "441000"). Inherited by all packages unless overridden.
+    dept_name                 = optional(string)           # Default department display name for OData filter (e.g. "Engineering"). Inherited by all packages unless overridden.
+    management_title_prefixes = optional(list(string), []) # Job title prefixes that identify leadership/owners in this cohort (e.g. ["Director", "Vice President", "Chief"]). Automatically excluded from member packages and included in owner packages when is_owner_package is set on auto_assignment_policy.
+    create_owners_package     = optional(bool, true)       # Set false to skip all owner packages (is_owner_package = true) in this catalog. Use when a cohort has no leadership split and all members share one package.
+
     access_packages = list(object({
       display_name      = string                # Name of the Access Package
       description       = optional(string)      # Description of the Access Package
@@ -111,10 +119,11 @@ variable "entitlement_catalogs" {
 
       auto_assignment_policy = optional(object({
         filter                      = optional(string)           # Raw OData :if set, all structured fields below are ignored
-        dept_code                   = optional(string)           # extensionAttribute1 value e.g. "441000" :ignored if filter is set
-        dept_name                   = optional(string)           # Department display name e.g. "Engineering" :ignored if filter is set
-        exclude_title_prefixes      = optional(list(string), []) # jobTitle -startsWith values to EXCLUDE :ignored if filter is set (member package pattern)
-        include_title_prefixes      = optional(list(string), []) # jobTitle -startsWith values to INCLUDE :ignored if filter is set (owner package pattern)
+        is_owner_package            = optional(bool, false)      # When true, filter INCLUDES management_title_prefixes (owner pattern: leadership only). When false, EXCLUDES them (member pattern: everyone except leadership). No effect when management_title_prefixes is empty or explicit include/exclude lists are set.
+        dept_code                   = optional(string)           # extensionAttribute1 value e.g. "441000" :overrides catalog-level dept_code; ignored if filter is set
+        dept_name                   = optional(string)           # Department display name e.g. "Engineering" :overrides catalog-level dept_name; ignored if filter is set
+        exclude_title_prefixes      = optional(list(string), []) # jobTitle -startsWith values to EXCLUDE :overrides catalog management_title_prefixes for member packages; ignored if filter is set
+        include_title_prefixes      = optional(list(string), []) # jobTitle -startsWith values to INCLUDE :overrides catalog management_title_prefixes for owner packages; ignored if filter is set
         remove_when_target_leaves   = optional(bool, true)       # Revoke access when the user no longer matches the filter. Defaults to true
         grace_period_before_removal = optional(string, "P7D")    # ISO 8601 duration to wait before revoking access after a user leaves scope. Defaults to 7 days
       }))
