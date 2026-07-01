@@ -232,6 +232,157 @@ resource "msgraph_resource" "auto-assignment-policies" {
 }
 
 ####################################################################################################
+###   Identity Governance - Direct (one-off) user assignments
+###   Assigns specific users named in a package's direct_assignments list straight to the
+###   package via an AdminAdd assignment request, for cases the auto_assignment_policy OData
+###   filter does not cover. The auto-assignment policy still handles the dept-wide population;
+###   this fills the exceptions.
+###
+###   Uses null_resource + local-exec (mirrors the catalog-association onboarding pattern):
+###     create  - check via Graph for an existing active assignment, AdminAdd if absent (idempotent).
+###     destroy - AdminRemove the user's active assignment when the entry is dropped from the config
+###               (or the package is destroyed), so the list is true desired state for these grants.
+###
+###   AdminAdd goes through the package's request-based assignment policy and bypasses approval /
+###   requestor-scope restrictions (admin-initiated). ARM_CLIENT_ID / ARM_CLIENT_SECRET /
+###   ARM_TENANT_ID must be set (the azuread provider sets these from its own auth); the destroy
+###   path also falls back to the `az` CLI.
+####################################################################################################
+resource "null_resource" "direct-assignments" {
+  for_each = { for a in local.direct-assignments : a.key => a }
+
+  triggers = {
+    user_id              = data.azuread_user.direct_assignment_users[each.value.user_principal_name].object_id
+    user_principal_name  = each.value.user_principal_name
+    package_id           = azuread_access_package.access-packages[each.value.access_package_key].id
+    assignment_policy_id = azuread_access_package_assignment_policy.assignment_policies[each.value.access_package_key].id
+  }
+
+  # Create: AdminAdd the user unless they already have an active assignment to the package.
+  provisioner "local-exec" {
+    interpreter = ["/bin/bash", "-c"]
+    command     = <<-EOT
+      set -euo pipefail
+
+      token=$(curl -sf -X POST \
+        "https://login.microsoftonline.com/$ARM_TENANT_ID/oauth2/v2.0/token" \
+        --data-urlencode "grant_type=client_credentials" \
+        --data-urlencode "client_id=$ARM_CLIENT_ID" \
+        --data-urlencode "client_secret=$ARM_CLIENT_SECRET" \
+        --data-urlencode "scope=https://graph.microsoft.com/.default" \
+        | jq -r '.access_token')
+
+      source "${path.module}/scripts/graph_get.sh"
+
+      existing=$(graph_get \
+        "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/assignments" \
+        --data-urlencode "\$filter=accessPackage/id eq '${self.triggers.package_id}'" \
+        --data-urlencode "\$expand=target" \
+        | jq --arg uid "${self.triggers.user_id}" '[.value[] | select((.target.objectId == $uid or .target.id == $uid) and (.state | ascii_downcase) != "expired" and (.state | ascii_downcase) != "canceled")] | length')
+
+      if [ "$${existing:-0}" -gt 0 ]; then
+        echo "[=] Already assigned: ${self.triggers.user_principal_name} -> ${self.triggers.package_id}"
+        exit 0
+      fi
+
+      body=$(jq -n \
+        --arg uid "${self.triggers.user_id}" \
+        --arg pid "${self.triggers.assignment_policy_id}" \
+        --arg apid "${self.triggers.package_id}" \
+        '{"requestType":"AdminAdd","assignment":{"targetId":$uid,"assignmentPolicyId":$pid,"accessPackageId":$apid}}')
+
+      HTTP_STATUS="429"
+      post_attempt=0
+      post_delay=15
+      while [ "$HTTP_STATUS" = "429" ] && [ $post_attempt -lt 5 ]; do
+        HTTP_STATUS=$(curl -s -o /dev/null -w "%%{http_code}" -X POST \
+          -H "Authorization: Bearer $token" \
+          -H "Content-Type: application/json" \
+          "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/assignmentRequests" \
+          -d "$body")
+        if [ "$HTTP_STATUS" = "429" ]; then
+          post_attempt=$((post_attempt + 1))
+          echo "[!] POST rate limited (429), retry $post_attempt/5 in $${post_delay}s..."
+          sleep $post_delay
+          post_delay=$((post_delay * 2))
+        fi
+      done
+
+      if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
+        echo "[+] Assigned: ${self.triggers.user_principal_name} -> ${self.triggers.package_id}"
+      else
+        echo "[!] AdminAdd returned HTTP $HTTP_STATUS for ${self.triggers.user_principal_name} -> ${self.triggers.package_id}" >&2
+        exit 1
+      fi
+    EOT
+  }
+
+  # Destroy: AdminRemove the user's active assignment so dropping them from the list revokes access.
+  provisioner "local-exec" {
+    when        = destroy
+    interpreter = ["/bin/bash", "-c"]
+    command     = <<-EOT
+      set -e
+      PACKAGE_ID="${self.triggers.package_id}"
+      USER_ID="${self.triggers.user_id}"
+      GRAPH_URL="https://graph.microsoft.com/v1.0"
+      ODATA_FILTER='$filter'
+
+      TOKEN=""
+      if [ -n "$ARM_TENANT_ID" ] && [ -n "$ARM_CLIENT_ID" ] && [ -n "$ARM_CLIENT_SECRET" ]; then
+        TOKEN=$(curl --silent --fail --request POST \
+          "https://login.microsoftonline.com/$ARM_TENANT_ID/oauth2/v2.0/token" \
+          --header "Content-Type: application/x-www-form-urlencoded" \
+          --data "client_id=$ARM_CLIENT_ID&client_secret=$ARM_CLIENT_SECRET&scope=https://graph.microsoft.com/.default&grant_type=client_credentials" \
+          | jq --raw-output '.access_token')
+      fi
+      if [ -z "$TOKEN" ] && command -v az >/dev/null 2>&1; then
+        TOKEN=$(az account get-access-token --resource https://graph.microsoft.com --query accessToken --output tsv 2>/dev/null || true)
+      fi
+      if [ -z "$TOKEN" ]; then
+        echo "ERROR: Could not obtain a Graph API token. Set ARM_TENANT_ID, ARM_CLIENT_ID, and ARM_CLIENT_SECRET, or run 'az login'."
+        exit 1
+      fi
+
+      ASSIGNMENTS=$(curl --silent --fail \
+        --header "Authorization: Bearer $TOKEN" \
+        --get \
+        --data-urlencode "$ODATA_FILTER=accessPackage/id eq '$PACKAGE_ID'" \
+        --data-urlencode '$expand=target' \
+        "$GRAPH_URL/identityGovernance/entitlementManagement/assignments" \
+        | jq --raw-output --arg uid "$USER_ID" '.value[] | select((.target.objectId == $uid or .target.id == $uid) and (.state | ascii_downcase) != "expired" and (.state | ascii_downcase) != "canceled") | .id')
+
+      if [ -z "$ASSIGNMENTS" ]; then
+        echo "No active assignment for user $USER_ID on package $PACKAGE_ID - nothing to remove."
+        exit 0
+      fi
+
+      for ASSIGNMENT_ID in $ASSIGNMENTS; do
+        echo "Submitting AdminRemove for assignment $ASSIGNMENT_ID (user $USER_ID)..."
+        HTTP_STATUS=$(curl --silent --write-out "%%{http_code}" --output /dev/null \
+          --request POST \
+          --header "Authorization: Bearer $TOKEN" \
+          --header "Content-Type: application/json" \
+          --data "{\"requestType\":\"AdminRemove\",\"assignment\":{\"id\":\"$ASSIGNMENT_ID\"}}" \
+          "$GRAPH_URL/identityGovernance/entitlementManagement/assignmentRequests")
+        if [ "$HTTP_STATUS" -ge 400 ]; then
+          echo "  Warning: AdminRemove returned HTTP $HTTP_STATUS for assignment $ASSIGNMENT_ID - skipping"
+        fi
+      done
+    EOT
+  }
+
+  # Only the package and its request-based policy are required for an AdminAdd; assignment_policies
+  # already depends_on the resource associations, so resource roles are ordered ahead of assignment
+  # transitively. Kept intentionally narrow so this feature stays independent of the SharePoint /
+  # app-role association resources (and the in-flight provider cutover that renames them).
+  depends_on = [
+    azuread_access_package.access-packages,
+    azuread_access_package_assignment_policy.assignment_policies,
+  ]
+}
+
+####################################################################################################
 ###   Drain active assignments before package deletion
 ###   Required because the Graph API rejects DELETE on a package that still has Delivered assignments.
 ###   Runs as a destroy-time provisioner so it always executes before the azuread_access_package destroy.

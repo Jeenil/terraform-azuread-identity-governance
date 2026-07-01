@@ -101,6 +101,14 @@ variable "entitlement_catalogs" {
       sharepoint_base_url  = optional(string, "")       # Base SharePoint URL e.g. "https://contoso.sharepoint.com/sites" :required when sharepoint_resources is non-empty
       access_type          = optional(string, "Member") # Role granted on all resolved resources in this package. "Member" or "Owner". Defaults to "Member"
 
+      # Directly assign specific users to this package via an AdminAdd assignment request.
+      # Use for one-off grants the auto_assignment_policy OData filter does not cover (the
+      # policy handles the dept-wide population; this handles the exceptions). Each entry is a
+      # user principal name (e.g. "jane.doe@contoso.com"), resolved to an object ID and assigned
+      # through the package's request-based assignment policy. Removing a user from the list
+      # revokes their assignment (AdminRemove). Defaults to no direct assignments.
+      direct_assignments = optional(list(string), [])
+
       auto_assignment_policy = optional(object({
         filter                      = optional(string)           # Raw OData :if set, all structured fields below are ignored
         dept_code                   = optional(string)           # extensionAttribute1 value e.g. "441000" :ignored if filter is set

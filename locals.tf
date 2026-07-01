@@ -112,6 +112,22 @@ locals {
     ]
   ])
 
+  # Flat list of one-off direct user assignments, one object per (package, user).
+  # Drives null_resource.direct-assignments, which AdminAdds each user to the package
+  # and AdminRemoves them when the entry is dropped from the config.
+  direct-assignments = flatten([
+    for catalog in var.entitlement_catalogs : [
+      for ap in catalog.access_packages : [
+        for upn in ap.direct_assignments : {
+          key                 = "${catalog.display_name}-${ap.display_name}-${upn}"
+          access_package_key  = "${catalog.display_name}-${ap.display_name}"
+          user_principal_name = upn
+        }
+      ]
+      if contains(keys(local._packages_flat), "${catalog.display_name}-${ap.display_name}")
+    ]
+  ])
+
   resources = flatten([
     for catalog in var.entitlement_catalogs : [
       for ap in catalog.access_packages : [
