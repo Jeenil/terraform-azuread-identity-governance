@@ -5,6 +5,18 @@ data "azuread_access_package_catalog" "existing" {
   display_name = each.key
 }
 
+# Resolves direct_assignments user principal names to object IDs for AdminAdd assignment requests.
+data "azuread_user" "direct_assignment_users" {
+  for_each = toset(flatten([
+    for catalog in var.entitlement_catalogs : [
+      for package in catalog.access_packages : package.direct_assignments
+      if contains(keys(local._packages_flat), "${catalog.display_name}-${package.display_name}")
+    ]
+  ]))
+
+  user_principal_name = each.value
+}
+
 # Resolves Entra ID security/M365 group display names to object IDs.
 data "azuread_group" "groups" {
   for_each = toset(flatten([
