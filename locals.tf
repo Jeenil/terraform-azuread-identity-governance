@@ -16,6 +16,20 @@ locals {
     ]) : pair.key => pair
   }
 
+  # Every teams_resources entry across all packages, name or object ID.
+  _teams_all = distinct(flatten([
+    for catalog in var.entitlement_catalogs : [
+      for package in catalog.access_packages : package.teams_resources
+    ]
+  ]))
+
+  # An entry that is already an object ID is used as-is and skips the lookup. Two Teams
+  # can share a display name, and the $filter in data.tf cannot tell them apart it takes
+  # value[0] — so naming the group by ID is the only way to pin the right one.
+  _teams_is_id = {
+    for t in local._teams_all : t => can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", t))
+  }
+
   # ── Resource list resolution ────────────────────────────────────────────────
   # If resources is non-empty use it directly (escape hatch).
   # Otherwise build from group_resources, teams_resources, sharepoint_resources.
@@ -32,7 +46,7 @@ locals {
       [for t in pair.pkg.teams_resources : {
         display_name           = t
         resource_origin_system = "AadGroup"
-        resource_origin_id     = data.msgraph_resource.teams_groups[t].output.id
+        resource_origin_id     = local._teams_is_id[t] ? t : data.msgraph_resource.teams_groups[t].output.id
         access_type            = pair.pkg.access_type
       }],
       [for s in pair.pkg.sharepoint_resources : {
