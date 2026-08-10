@@ -29,14 +29,12 @@ data "azuread_group" "groups" {
 }
 
 # Resolves Teams team display names to their backing M365 group object IDs.
-# Filters by Unified group type AND resourceProvisioningOptions containing 'Team' to
-# uniquely target Teams-backed groups even when other groups share the same display name.
+# Filters by Unified group type AND resourceProvisioningOptions containing 'Team' so a
+# non-Teams group sharing the display name is not picked up. Two Teams-backed groups with
+# the same display name are indistinguishable here (the export takes value[0]) name those
+# by object ID instead, which skips this lookup entirely (see local._teams_is_id).
 data "msgraph_resource" "teams_groups" {
-  for_each = toset(flatten([
-    for catalog in var.entitlement_catalogs : [
-      for package in catalog.access_packages : package.teams_resources
-    ]
-  ]))
+  for_each = toset([for t in local._teams_all : t if !local._teams_is_id[t]])
 
   url = "/groups"
   query_parameters = {

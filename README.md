@@ -8,6 +8,7 @@ and structured OData filter assembly for auto-assignment policies.
 ## Features
 
 - **Display name resolution** - pass Entra group and Teams team display names directly; the module resolves them to object IDs via data source
+- **Object ID form for ambiguous Teams** - a `teams_resources` entry that is already an object ID is used as-is and skips the lookup. Two Teams-backed groups can share a display name and the lookup cannot tell them apart (it takes the first match), so naming the group by ID is the only way to pin the right one. Note this also skips the dynamic-membership precondition
 - **Per-package `access_type`** - set a role once at the package level and it fans out to all resources in that package. `"Member"` or `"Owner"` for `AadGroup` and `SharePointOnline` resources (resolved to the site Members/Owners permission group automatically), a role UUID for `AadApplication` resources
 - **SharePoint resources** - pass site path suffixes (`"BrandDesigns"`) with a `sharepoint_base_url` instead of constructing full origin IDs manually
 - **Idempotent SharePoint catalog onboarding** - catalog-level associations are handled via `null_resource` + `local-exec` that checks via Graph API before POSTing; avoids `ResourceAlreadyOnboarded` errors on subsequent applies

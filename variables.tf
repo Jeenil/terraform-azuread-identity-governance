@@ -96,7 +96,7 @@ variable "entitlement_catalogs" {
       })))
 
       group_resources      = optional(list(string), []) # Entra ID security/M365 group display names :resolved to object IDs via data source
-      teams_resources      = optional(list(string), []) # Teams team display names :resolved to the backing M365 group object IDs via data source
+      teams_resources      = optional(list(string), []) # Teams team display names :resolved to the backing M365 group object IDs via data source. An entry that is already an object ID is used as-is :use that form when two Teams share a display name
       sharepoint_resources = optional(list(string), []) # SharePoint site path suffixes e.g. "BrandDesigns" for /sites/BrandDesigns :requires sharepoint_base_url
       sharepoint_base_url  = optional(string, "")       # Base SharePoint URL e.g. "https://contoso.sharepoint.com/sites" :required when sharepoint_resources is non-empty
       access_type          = optional(string, "Member") # Role granted on all resolved resources in this package. "Member" or "Owner". Defaults to "Member"
