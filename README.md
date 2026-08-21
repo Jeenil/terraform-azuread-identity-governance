@@ -13,6 +13,7 @@ and structured OData filter assembly for auto-assignment policies.
 - **SharePoint resources** - pass site path suffixes (`"BrandDesigns"`) with a `sharepoint_base_url` instead of constructing full origin IDs manually
 - **Idempotent SharePoint catalog onboarding** - catalog-level associations are handled via `null_resource` + `local-exec` that checks via Graph API before POSTing; avoids `ResourceAlreadyOnboarded` errors on subsequent applies
 - **Idempotent auto-assignment policies** - same check-before-create pattern; avoids duplicate policy errors or stale state issues if the policy already exists in Azure
+- **SharePoint role scope removal** - dropping a site from `sharepoint_resources` actually detaches its resource role scope from the access package; the underlying `msgraph_resource_action` cannot delete on destroy, so a paired `null_resource` resolves the scope by originId and issues the Graph `DELETE`
 - **Direct (one-off) assignments** - list specific users in `direct_assignments` to grant a package directly (AdminAdd) for cases the auto-assignment OData filter cannot express; idempotent create and revoke-on-removal
 - **Structured OData filters** - use `dept_code`, `dept_name`, `exclude_title_prefixes`, and `include_title_prefixes` to build auto-assignment filters without writing raw OData
 - **Raw filter escape hatch** - set `filter` directly for any custom OData expression; structured fields are ignored when this is set
@@ -225,21 +226,50 @@ Additional gaps covered:
 | **Idempotent SharePoint catalog onboarding** | No - `ResourceAlreadyOnboarded` on subsequent applies | Yes - `null_resource` local-exec checks via Graph before POSTing |
 | **Idempotent auto-assignment policy creation** | No | Yes - `null_resource` local-exec checks via Graph before POSTing; safe to re-apply after any state manipulation |
 | **Structured OData filters** | No - raw filter string only | Yes - `dept_code`, `dept_name`, `include/exclude_title_prefixes`; raw `filter` still works as an escape hatch |
+| **SharePoint role scope removal** | No - association resources have no destroy path; scope stays attached in Entra | Yes - paired `null_resource` destroy provisioner resolves the scope by originId and `DELETE`s it |
 | **Direct (one-off) user assignments** | No | Yes - `direct_assignments` AdminAdds named users (idempotent) and revokes them on removal, for cases the auto-assignment filter cannot express |
 
 ## Known Limitations and Roadmap
 
 ### Catalog resource association removal
 
-Removing a SharePoint resource from a catalog is not currently supported. The `null_resource`
+Removing a SharePoint resource from a *catalog* is not currently supported. The `null_resource`
 `local-exec` provisioner only runs on create - Terraform has no mechanism to issue a Graph API
 DELETE for catalog associations on destroy. Removing a SharePoint resource from your config will
 leave the catalog association in Entra until it is deleted manually via the portal or Graph API.
+
+The *access package* side of this is handled: dropping a site from `sharepoint_resources` does
+remove the resource role scope from the package (see below). Only the catalog-level association
+is left behind, which is harmless - it just leaves the site available to be re-added later.
 
 Tracking: [hashicorp/terraform-provider-azuread#1637](https://github.com/hashicorp/terraform-provider-azuread/issues/1637)
 
 Once the `azuread` provider adds native support for catalog resource associations this module will
 be updated to use it, enabling full create and destroy lifecycle management.
+
+### SharePoint resource role scopes are removed by a destroy provisioner
+
+`msgraph_resource_action` is fire-and-forget: its `Delete` is a no-op, and it records the POST url
+as its id rather than the `{roleId}_{scopeId}` Graph returns. Removing a site from
+`sharepoint_resources` therefore used to drop the association from state (`Destruction complete
+after 0s`, no API call) while the role scope stayed attached to the access package in Entra.
+
+`null_resource.sharepoint-access-package-role-scopes` closes that gap. It mirrors the association
+`for_each`, holds the package id / site url / role suffix in `triggers`, and on destroy resolves
+the matching `resourceRoleScope` by originId and issues the `DELETE`.
+
+Two consequences worth knowing:
+
+- The provisioner needs Graph credentials at destroy time - `ARM_TENANT_ID` / `ARM_CLIENT_ID` /
+  `ARM_CLIENT_SECRET`, falling back to `az account get-access-token`. Same requirement as
+  `direct_assignments` and the package assignment drain.
+- Role scopes orphaned by a config change made *before* this resource existed are not adopted.
+  Nothing in state references them, so they must be removed once by hand; after that the
+  lifecycle is managed.
+
+Tracking: [hashicorp/terraform-provider-azuread#1880](https://github.com/hashicorp/terraform-provider-azuread/pull/1880).
+Once that lands, both this resource and `msgraph_resource_action.sharepoint-access-package-associations`
+can be replaced with a native `azuread` resource.
 
 ### Graph API 429 throttling on plans with SharePoint resources
 
@@ -307,6 +337,7 @@ provider version is bumped - once it is, the parallelism override can be removed
 | [msgraph_resource_action.sharepoint-access-package-associations](https://registry.terraform.io/providers/microsoft/msgraph/latest/docs/resources/resource_action) | resource |
 | [null_resource.catalog-associations](https://registry.terraform.io/providers/hashicorp/null/latest/docs/resources/resource) | resource |
 | [null_resource.direct-assignments](https://registry.terraform.io/providers/hashicorp/null/latest/docs/resources/resource) | resource |
+| [null_resource.sharepoint-access-package-role-scopes](https://registry.terraform.io/providers/hashicorp/null/latest/docs/resources/resource) | resource |
 | [null_resource.sharepoint-catalog-associations](https://registry.terraform.io/providers/hashicorp/null/latest/docs/resources/resource) | resource |
 | [terraform_data.force-remove-assignments](https://registry.terraform.io/providers/hashicorp/terraform/latest/docs/resources/data) | resource |
 | [terraform_data.validate_teams_not_dynamic](https://registry.terraform.io/providers/hashicorp/terraform/latest/docs/resources/data) | resource |

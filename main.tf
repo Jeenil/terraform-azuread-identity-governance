@@ -839,6 +839,130 @@ resource "msgraph_resource_action" "sharepoint-access-package-associations" {
   ]
 }
 
+###   Identity Governance - SharePoint Resource Role Scope Removal
+###   msgraph_resource_action above is fire-and-forget: its Delete is a no-op and its id is
+###   the POST url rather than the {roleId}_{scopeId} the API returns. Dropping a site from
+###   sharepoint_resources therefore removes the association from state while leaving the
+###   role scope attached to the access package in Entra.
+###   Until azuread can manage SharePoint role scopes natively
+###   (https://github.com/hashicorp/terraform-provider-azuread/pull/1880) this sibling carries
+###   the identifying values and issues the DELETE on destroy.
+###   Triggers hold only config-derived values (package id, site url, role suffix) and never
+###   live API data, so the provisioner fires when the association is really gone rather than
+###   when a role's originId drifts.
+###################################################################
+resource "null_resource" "sharepoint-access-package-role-scopes" {
+  for_each = { for resource in local.resources : resource.access_package_resource_association_key => resource if resource.resource_origin_system == "SharePointOnline" }
+
+  triggers = {
+    package_id      = azuread_access_package.access-packages[each.value.access_package_key].id
+    scope_origin_id = each.value.resource_origin_id
+    role_suffix     = each.value.access_type == "Owner" ? " owners" : " members"
+  }
+
+  provisioner "local-exec" {
+    when        = destroy
+    interpreter = ["/bin/bash", "-c"]
+    command     = <<-EOT
+      set -e
+      PACKAGE_ID="${self.triggers.package_id}"
+      SCOPE_ORIGIN_ID="${self.triggers.scope_origin_id}"
+      ROLE_SUFFIX="${self.triggers.role_suffix}"
+      GRAPH_URL="https://graph.microsoft.com/v1.0"
+      SCOPES_URL="$GRAPH_URL/identityGovernance/entitlementManagement/accessPackages/$PACKAGE_ID/resourceRoleScopes"
+      ODATA_EXPAND='$expand'
+
+      TOKEN=""
+      if [ -n "$ARM_TENANT_ID" ] && [ -n "$ARM_CLIENT_ID" ] && [ -n "$ARM_CLIENT_SECRET" ]; then
+        TOKEN=$(curl --silent --fail --request POST \
+          "https://login.microsoftonline.com/$ARM_TENANT_ID/oauth2/v2.0/token" \
+          --header "Content-Type: application/x-www-form-urlencoded" \
+          --data "client_id=$ARM_CLIENT_ID&client_secret=$ARM_CLIENT_SECRET&scope=https://graph.microsoft.com/.default&grant_type=client_credentials" \
+          | jq --raw-output '.access_token')
+      fi
+      if [ -z "$TOKEN" ] && command -v az >/dev/null 2>&1; then
+        TOKEN=$(az account get-access-token --resource https://graph.microsoft.com --query accessToken --output tsv 2>/dev/null || true)
+      fi
+      if [ -z "$TOKEN" ]; then
+        echo "ERROR: Could not obtain a Graph API token. Set ARM_TENANT_ID, ARM_CLIENT_ID, and ARM_CLIENT_SECRET, or run 'az login'." >&2
+        exit 1
+      fi
+
+      RESP=$(mktemp)
+      trap 'rm -f "$RESP"' EXIT
+
+      # Identity Governance throttles hard - the pipeline already pins tfParallelism to 1
+      # for this reason. Retry 429/5xx with backoff and echo the status for the caller to
+      # branch on. A bare `curl --fail` here would trip `set -e` and abort the destroy with
+      # no message, silently leaving the role scope attached (the exact bug this resource
+      # exists to fix). Mirrors scripts/graph_get.sh, inlined because destroy provisioners
+      # cannot rely on the module directory still being present.
+      graph_retry() {
+        local method="$1"
+        shift
+        local attempt=0
+        local delay=15
+        local code
+        while [ $attempt -lt 5 ]; do
+          code=$(curl --silent --output "$RESP" --write-out "%%{http_code}" \
+            --request "$method" --header "Authorization: Bearer $TOKEN" "$@")
+          if [ "$code" = "429" ] || [ "$code" -ge 500 ]; then
+            attempt=$((attempt + 1))
+            echo "  [!] HTTP $code from Graph, retry $attempt/5 in $${delay}s..." >&2
+            sleep "$delay"
+            delay=$((delay * 2))
+            continue
+          fi
+          echo "$code"
+          return 0
+        done
+        echo "  [!] Graph still returning $code after 5 retries" >&2
+        return 1
+      }
+
+      CODE=$(graph_retry GET "$SCOPES_URL" --get --data-urlencode "$ODATA_EXPAND=role,scope")
+      if [ "$CODE" = "404" ]; then
+        echo "Access package $PACKAGE_ID no longer exists - nothing to remove."
+        exit 0
+      fi
+      if [ "$CODE" -lt 200 ] || [ "$CODE" -ge 300 ]; then
+        echo "ERROR: GET resourceRoleScopes returned HTTP $CODE: $(cat "$RESP")" >&2
+        exit 1
+      fi
+
+      # Match on the scope originId (the site url) plus the role display-name suffix, the
+      # same pairing local._sp_selected_role uses on create. Resolving the id at destroy
+      # time rather than storing it keeps this correct if the catalog resource was
+      # re-onboarded and its role/scope GUIDs changed since the association was made.
+      SCOPE_IDS=$(jq --raw-output \
+        --arg oid "$SCOPE_ORIGIN_ID" \
+        --arg suffix "$ROLE_SUFFIX" \
+        '.value[] | select(.scope.originId == $oid and (.role.displayName | ascii_downcase | endswith($suffix))) | .id' \
+        "$RESP")
+
+      if [ -z "$SCOPE_IDS" ]; then
+        echo "No resource role scope for $SCOPE_ORIGIN_ID on package $PACKAGE_ID - nothing to remove."
+        exit 0
+      fi
+
+      for SCOPE_ID in $SCOPE_IDS; do
+        echo "Removing resource role scope $SCOPE_ID ($SCOPE_ORIGIN_ID) from package $PACKAGE_ID..."
+        CODE=$(graph_retry DELETE "$SCOPES_URL/$SCOPE_ID")
+        if [ "$CODE" = "404" ]; then
+          echo "  Already removed - skipping"
+        elif [ "$CODE" -ge 400 ]; then
+          echo "  ERROR: DELETE returned HTTP $CODE: $(cat "$RESP")" >&2
+          exit 1
+        fi
+      done
+    EOT
+  }
+
+  depends_on = [
+    msgraph_resource_action.sharepoint-access-package-associations,
+  ]
+}
+
 ###   Identity Governance - Resource Access Package Associations for AadApplication due to https://github.com/hashicorp/terraform-provider-azuread/issues/1066
 ###################################################################
 resource "msgraph_resource_action" "resource-access-package-associations" {
