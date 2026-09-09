@@ -26,7 +26,7 @@ output "resource_access_package_associations" {
 }
 
 output "auto_assignment_policies" {
-  description = "Auto-assignment policies managed through this module, keyed by \"<catalog>-<package>\". Exposes the live policy id and membership rule (resolved OData filter) for downstream modules and CI assertions."
+  description = "Auto-assignment policies managed through this module, keyed by \"<catalog>-<package>\" for a package's primary policy and \"<catalog>-<package>-<name>\" for each entry in its additional_auto_assignment_policies. Exposes the live policy id and membership rule (resolved OData filter) for downstream modules and CI assertions."
   value = {
     for key, policy in msgraph_resource.auto-assignment-policies :
     key => {

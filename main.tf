@@ -173,6 +173,18 @@ resource "azuread_access_package_assignment_policy" "assignment_policies" {
 ###   These are separate from request-based policies — Entra ID automatically grants
 ###   access to users matching the OData filter without requiring a request.
 ###
+###   A package may carry more than one, via additional_auto_assignment_policies: Entra caps a
+###   single policy's membershipRule at 3,072 characters, and a population too large for one rule
+###   is split across policies whose union is the assigned population. Microsoft supports that only
+###   while the rules do not overlap — a user matching two policies can lose access when they fall
+###   out of scope of one but not the other. Keeping them disjoint is the caller's job; see
+###   variables.tf.
+###
+###   State keys come from local.auto-assignment-policy-instances: the primary policy keeps the
+###   bare "<catalog>-<package>" key and the unsuffixed displayName, each additional one appends
+###   "-<name>" to both. Nothing is positional, so a package that sets only auto_assignment_policy
+###   is keyed exactly as it was before multi-policy support existed.
+###
 ###   Managed via msgraph_resource (not null_resource) so the policy is true desired
 ###   state: create = POST, update = PUT (full replacement — the only update verb
 ###   assignmentPolicies support, see accesspackageassignmentpolicy-update), delete =
@@ -186,30 +198,32 @@ resource "azuread_access_package_assignment_policy" "assignment_policies" {
 ###   before the first apply, otherwise the create POST makes a duplicate:
 ###     terraform import '<module path>.msgraph_resource.auto-assignment-policies["<key>"]' \
 ###       /identityGovernance/entitlementManagement/assignmentPolicies/<policyId>
+###   <key> is "<catalog>-<package>" for the primary policy, "<catalog>-<package>-<name>" for one
+###   declared in additional_auto_assignment_policies.
 ####################################################################################################
 resource "msgraph_resource" "auto-assignment-policies" {
-  for_each = { for ap in local.access-packages : ap.key => ap if ap.auto_assignment_policy != null }
+  for_each = local.auto-assignment-policy-instances
 
   url           = "/identityGovernance/entitlementManagement/assignmentPolicies"
   api_version   = "v1.0"
   update_method = "PUT"
 
   body = {
-    displayName        = "${each.value.display_name}-auto-assignment-policy"
+    displayName        = each.value.display_name
     description        = each.value.description
     allowedTargetScope = "specificDirectoryUsers"
     specificAllowedTargets = [{
       "@odata.type"  = "#microsoft.graph.attributeRuleMembers"
       description    = "Attribute rule for auto-assignment"
-      membershipRule = each.value.auto_assignment_policy.filter
+      membershipRule = each.value.policy.filter
     }]
     automaticRequestSettings = {
       requestAccessForAllowedTargets             = true
-      removeAccessWhenTargetLeavesAllowedTargets = each.value.auto_assignment_policy.remove_when_target_leaves
-      gracePeriodBeforeAccessRemoval             = each.value.auto_assignment_policy.grace_period_before_removal
+      removeAccessWhenTargetLeavesAllowedTargets = each.value.policy.remove_when_target_leaves
+      gracePeriodBeforeAccessRemoval             = each.value.policy.grace_period_before_removal
     }
     accessPackage = {
-      id = azuread_access_package.access-packages[each.key].id
+      id = azuread_access_package.access-packages[each.value.package_key].id
     }
   }
 
