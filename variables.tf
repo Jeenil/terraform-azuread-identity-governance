@@ -119,6 +119,35 @@ variable "entitlement_catalogs" {
         grace_period_before_removal = optional(string, "P7D")    # ISO 8601 duration to wait before revoking access after a user leaves scope. Defaults to 7 days
       }))
 
+      # Additional automatic assignment policies for this package, on top of auto_assignment_policy.
+      #
+      # Entra caps a single policy's membershipRule at 3,072 characters. A population too large to
+      # express in one rule is split across several policies on the same package; the package's
+      # assigned population is their union, so splitting a rule does not change who gets access.
+      #
+      # Microsoft supports more than one automatic assignment policy per package ONLY when the
+      # policies do not overlap: "If a user matches more than one automatic assignment policy, this
+      # is not supported and there may be subsequent problems losing access should a user fall out
+      # of scope of one policy but not the other."
+      # https://learn.microsoft.com/en-us/entra/id-governance/entitlement-management-access-package-auto-assignment-policy
+      # Write the rules mutually exclusive. This module cannot check that for you - OData rule
+      # disjointness is not decidable from the strings - so it is the caller's obligation.
+      #
+      # `name` is an identity, not a label: it suffixes both the policy's Entra displayName (which
+      # must be unique within a package) and its Terraform state key. Keys are therefore not
+      # positional, so reordering this list, or adding and removing entries, never re-keys the
+      # others. Renaming an entry destroys and recreates its policy.
+      #
+      # Only a raw `filter` is accepted here. The structured dept_code/dept_name/title-prefix
+      # fields on auto_assignment_policy exist for the single-policy convenience path; a package
+      # that needs several rules is already composing them itself.
+      additional_auto_assignment_policies = optional(list(object({
+        name                        = string                  # Unique within the package. Suffixes the policy displayName and the Terraform state key
+        filter                      = string                  # Raw OData membership rule. Must not overlap any other policy on this package
+        remove_when_target_leaves   = optional(bool, true)    # Revoke access when the user no longer matches the filter. Defaults to true
+        grace_period_before_removal = optional(string, "P7D") # ISO 8601 duration to wait before revoking access after a user leaves scope. Defaults to 7 days
+      })), [])
+
       resources = optional(list(object({                    # Escape hatch :pass raw resource objects directly. Overrides group/teams/sharepoint_resources if non-empty
         display_name           = optional(string)           # Deprecated! Descriptive display name to be used for the Terraform Resource key
         resource_origin_system = string                     # The type of resource in the origin system. "SharePointOnline", "AadApplication", "AadGroup"
@@ -136,5 +165,26 @@ variable "entitlement_catalogs" {
       ])
     ])
     error_message = "sharepoint_base_url must be set on any access package that has sharepoint_resources."
+  }
+
+  # Names key the auto-assignment policy resource. A duplicate name inside one package collapses two
+  # policies onto one map key, and merge() would silently keep the last - one rule quietly stops
+  # being deployed, with no plan diff to notice. Fail here instead.
+  validation {
+    condition = alltrue([
+      for catalog in var.entitlement_catalogs : alltrue([
+        for pkg in catalog.access_packages :
+        length(distinct([for p in pkg.additional_auto_assignment_policies : p.name])) == length(pkg.additional_auto_assignment_policies)
+      ])
+    ])
+    error_message = format(
+      "Duplicate additional_auto_assignment_policies name on access package(s): %s. Each name must be unique within its package - it keys both the Entra policy displayName and the Terraform state address.",
+      join(", ", flatten([
+        for catalog in var.entitlement_catalogs : [
+          for pkg in catalog.access_packages : pkg.display_name
+          if length(distinct([for p in pkg.additional_auto_assignment_policies : p.name])) != length(pkg.additional_auto_assignment_policies)
+        ]
+      ]))
+    )
   }
 }

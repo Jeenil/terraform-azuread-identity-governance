@@ -126,6 +126,40 @@ locals {
     ]
   ])
 
+  # ── Auto-assignment policy instances ────────────────────────────────────────
+  # One entry per policy msgraph_resource.auto-assignment-policies manages, keyed by that
+  # resource's state address. An access package may carry several: Entra caps a single policy's
+  # membershipRule at 3,072 characters, so a population that does not fit one rule is split across
+  # policies whose union is the package's assigned population. See the note on
+  # additional_auto_assignment_policies in variables.tf — the rules must not overlap.
+  #
+  # The primary policy keeps the bare package key and the unsuffixed displayName it has always had.
+  # That is the point of the "additional_" shape rather than one combined list: a package that only
+  # sets auto_assignment_policy — every package written before this existed — re-keys to exactly
+  # what is already in state and plans as a no-op.
+  auto-assignment-policy-instances = merge(concat(
+    [{
+      for ap in local.access-packages : ap.key => {
+        package_key  = ap.key
+        display_name = "${ap.display_name}-auto-assignment-policy"
+        description  = ap.description
+        policy       = ap.auto_assignment_policy
+      }
+      if ap.auto_assignment_policy != null
+    }],
+    [
+      for ap in local.access-packages : {
+        for extra in ap.additional_auto_assignment_policies :
+        "${ap.key}-${extra.name}" => {
+          package_key  = ap.key
+          display_name = "${ap.display_name}-auto-assignment-policy-${extra.name}"
+          description  = ap.description
+          policy       = extra
+        }
+      }
+    ]
+  )...)
+
   # Flat list of one-off direct user assignments, one object per (package, user).
   # Drives null_resource.direct-assignments, which AdminAdds each user to the package
   # and AdminRemoves them when the entry is dropped from the config.
